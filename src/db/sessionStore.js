@@ -43,9 +43,13 @@ function initSessionDb() {
 
 /**
  * Sinkronizira aktivnu sesiju (sobu) s bazom — WebSocket veze i dalje žive u memoriji.
+ * @param {boolean} [force] ako true, upis i u hibernaciji (npr. wake, leave, ulazak u hibernaciju).
  */
-function persistSession(session) {
+function persistSession(session, force = false) {
     if (!db) initSessionDb();
+    if (!force && session.hibernated) {
+        return;
+    }
 
     try {
         const updatedAt = new Date().toISOString();
@@ -73,6 +77,18 @@ function persistSession(session) {
     }
 }
 
+function sessionCodeExists(code) {
+    if (!db) initSessionDb();
+
+    try {
+        const row = db.prepare('SELECT 1 AS x FROM sessions WHERE code = ?').get(code);
+        return !!row;
+    } catch (err) {
+        logError('sessionCodeExists failed', err);
+        return false;
+    }
+}
+
 function removeSessionRecord(code) {
     if (!db) initSessionDb();
 
@@ -87,6 +103,41 @@ function closeSessionDb() {
     if (db) {
         db.close();
         db = null;
+    }
+}
+
+/**
+ * Zamjena cijele tablice stanjem iz RAM-a (jedna transakcija).
+ * Briše sve retke i ponovno umetne aktivne sesije — baza = snimak RAM-a.
+ */
+function replaceAllSessionsFromMemory(rows) {
+    if (!db) initSessionDb();
+
+    try {
+        const now = new Date().toISOString();
+        const insert = db.prepare(`
+            INSERT INTO sessions (code, type, created_at, renew_count, client_count, updated_at)
+            VALUES (@code, @type, @created_at, @renew_count, @client_count, @updated_at)
+        `);
+
+        const tx = db.transaction((list) => {
+            db.prepare('DELETE FROM sessions').run();
+            for (const r of list) {
+                insert.run({
+                    code: r.code,
+                    type: r.type,
+                    created_at: r.created_at,
+                    renew_count: r.renew_count ?? 0,
+                    client_count: r.client_count,
+                    updated_at: r.updated_at || now,
+                });
+            }
+        });
+
+        tx(rows);
+    } catch (err) {
+        logError('replaceAllSessionsFromMemory failed', err);
+        throw err;
     }
 }
 
@@ -116,7 +167,9 @@ function listAllSessionsFromDb() {
 module.exports = {
     initSessionDb,
     persistSession,
+    sessionCodeExists,
     removeSessionRecord,
+    replaceAllSessionsFromMemory,
     closeSessionDb,
     listAllSessionsFromDb,
 };

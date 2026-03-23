@@ -23,8 +23,18 @@ function getSodium() {
     return sodium;
 }
 
+/** Za crypto_box (interno, ne šalji klijentu). */
+function getServerKeypairBytes() {
+    assertReady();
+    return {
+        publicKey: keypair.publicKey,
+        privateKey: keypair.privateKey,
+    };
+}
+
 module.exports = {
     initServerIdentity,
     getServerPublicKeyBase64,
     getSodium,
+    getServerKeypairBytes,
 };

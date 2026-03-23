@@ -35,7 +35,7 @@ function handleClientKey(ws, msg) {
 
     const pub = new Uint8Array(bytes);
     setClientPublicKey(ws, pub);
-    logInfo('Client public key registered');
+    logInfo(`[WS] plaintext | client_key OK | id=ws${ws._clientId ?? '?'} | box kanal sada aktivan`);
 
     ws.send(JSON.stringify({ t: 'client_key_ack', ok: true }));
 }

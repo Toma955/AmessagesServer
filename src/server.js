@@ -1,83 +1,30 @@
 const http = require('http');
-const path = require('path');
-const fs = require('fs');
-const WebSocket = require('ws');
 const sodium = require('libsodium-wrappers');
 const { getConfig } = require('./config/env');
 const { initServerIdentity } = require('./crypto/serverIdentity');
-const { initSessionDb, listAllSessionsFromDb } = require('./db/sessionStore');
+const { initSessionDb, closeSessionDb } = require('./db/sessionStore');
 const { routeMessage } = require('./core/messageRouter');
-const { leaveRoom, listActiveRooms } = require('./core/roomManager');
+const {
+    leaveRoom,
+    syncAllSessionsToDatabase,
+    getRoomCodeForWs,
+} = require('./core/roomManager');
 const { logInfo, logError } = require('./utils/logger');
+const { buildHttpListener } = require('./http/buildHttpListener');
+const { WebSocketManager } = require('./ws/WebSocketManager');
+const { shutdownGracefully } = require('./bootstrap/shutdown');
 
 const config = getConfig();
 
-const indexHtmlPath = path.join(__dirname, '..', 'public', 'index.html');
-let indexHtml;
-try {
-    indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
-} catch (err) {
-    logError('Could not read public/index.html', err);
-    indexHtml = null;
-}
+const server = http.createServer(buildHttpListener());
 
-const server = http.createServer((req, res) => {
-    const pathname = new URL(req.url, 'http://localhost').pathname;
-
-    if (req.method === 'GET' && pathname === '/health') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ status: 'ok' }));
-    }
-
-    if (req.method === 'GET' && pathname === '/api/rooms') {
-        try {
-            const payload = {
-                rooms: listActiveRooms(),
-                database: listAllSessionsFromDb(),
-            };
-            res.writeHead(200, {
-                'Content-Type': 'application/json; charset=utf-8',
-                'Cache-Control': 'no-store',
-            });
-            return res.end(JSON.stringify(payload));
-        } catch (err) {
-            logError('GET /api/rooms failed', err);
-            res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-            return res.end(JSON.stringify({ error: 'internal_error' }));
-        }
-    }
-
-    if (req.method === 'GET' && pathname === '/') {
-        if (indexHtml) {
-            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-            return res.end(indexHtml);
-        }
-        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-        return res.end('Index not available');
-    }
-
-    res.writeHead(404);
-    res.end();
+const wsManager = new WebSocketManager({
+    httpServer: server,
+    routeMessage,
+    leaveRoom,
+    getRoomCodeForWs,
 });
-
-const wss = new WebSocket.Server({ server });
-
-wss.on('connection', (ws) => {
-    logInfo('New client connected');
-
-    ws.on('message', (data) => {
-        routeMessage(ws, data.toString());
-    });
-
-    ws.on('close', () => {
-        leaveRoom(ws);
-        logInfo('Client disconnected');
-    });
-
-    ws.on('error', (err) => {
-        logError('WS error', err);
-    });
-});
+const wss = wsManager.attach();
 
 const listeningPromise = (async () => {
     await sodium.ready;
@@ -90,6 +37,32 @@ const listeningPromise = (async () => {
         });
     });
     logInfo(`Server listening on port ${config.PORT}`);
+
+    if (config.NODE_ENV !== 'test' && config.SYNC_DB_INTERVAL_MS > 0) {
+        const id = setInterval(() => {
+            try {
+                syncAllSessionsToDatabase();
+            } catch (err) {
+                logError('periodic sync failed', err);
+            }
+        }, config.SYNC_DB_INTERVAL_MS);
+        id.unref();
+    }
+
+    if (config.NODE_ENV !== 'test') {
+        process.on('SIGINT', () => shutdownGracefully({
+            wss,
+            server,
+            syncAllSessionsToDatabase,
+            closeSessionDb,
+        }, 'SIGINT'));
+        process.on('SIGTERM', () => shutdownGracefully({
+            wss,
+            server,
+            syncAllSessionsToDatabase,
+            closeSessionDb,
+        }, 'SIGTERM'));
+    }
 })().catch((err) => {
     logError('Server failed to start', err);
     process.exit(1);

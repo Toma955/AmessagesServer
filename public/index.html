@@ -156,7 +156,6 @@
                 type: r.type,
                 clientCount: r.clientCount,
                 createdAt: r.createdAt,
-                renewCount: r.renewCount,
                 updatedAt: r.updatedAt || '—',
             };
         }
@@ -166,9 +165,8 @@
                 pin: r.pin,
                 type: r.type,
                 clientCount: r.clientCount,
+                pinLocked: r.pinLocked ? 'da' : 'ne',
                 createdAt: r.createdAt,
-                renewCount: r.renewCount,
-                expiryDisabled: r.expiryDisabled ? 'da' : 'ne',
             };
         }
 
@@ -186,8 +184,7 @@
                     { key: 'pin', label: 'PIN (kod sobe)', mono: true },
                     { key: 'type', label: 'Tip' },
                     { key: 'clientCount', label: 'Klijenti' },
-                    { key: 'renewCount', label: 'Produženja' },
-                    { key: 'expiryDisabled', label: 'Bez isteka' },
+                    { key: 'pinLocked', label: 'PIN zaključan' },
                     { key: 'createdAt', label: 'Otvaranje' },
                 ]);
 
@@ -195,7 +192,6 @@
                     { key: 'pin', label: 'PIN (kod sobe)', mono: true },
                     { key: 'type', label: 'Tip' },
                     { key: 'clientCount', label: 'Klijenti' },
-                    { key: 'renewCount', label: 'Produženja' },
                     { key: 'createdAt', label: 'Otvaranje' },
                     { key: 'updatedAt', label: 'Zadnji zapis' },
                 ]);

@@ -1,77 +1,28 @@
 const { logInfo } = require('../utils/logger');
-const { persistSession, removeSessionRecord } = require('../db/sessionStore');
-
-const SESSION_DURATION_MS = 15 * 60 * 1000;   // 15 min
-const WARNING_BEFORE_EXPIRY_MS = 30 * 1000;   // 30 sek prije isteka
-const MAX_EXTENDS = 3;
+const { persistSession, removeSessionRecord, replaceAllSessionsFromMemory, sessionCodeExists } = require('../db/sessionStore');
+const { randomRoomCode16 } = require('../utils/generateRoomCode');
+const { sendSecure } = require('../crypto/boxChannel');
+const { RESERVE_MS } = require('./roomConstants');
 
 // code -> session
-// session = { code, type, clients, createdAt, renewCount, timeoutId, warningTimeoutId }
+// session = { code, type, clients, createdAt }
 const sessions = new Map();
 
 // ws -> code
 const socketRoom = new Map();
 
-function scheduleSessionTimers(code) {
-    const session = sessions.get(code);
-    if (!session) return;
-    if (session.expiryDisabled) return;
+/** Kratkotrajna rezervacija koda iz GET /api/room-code (ms -> istek). */
+const reservedCodes = new Map();
 
-    // očisti stare timere
-    if (session.timeoutId) clearTimeout(session.timeoutId);
-    if (session.warningTimeoutId) clearTimeout(session.warningTimeoutId);
-
-    // warning 30 sekundi prije isteka
-    const warningTimeout = setTimeout(() => {
-        logInfo('EXTEND_REQUEST auto-send for code', code, 'renewCount', session.renewCount);
-        for (const client of session.clients) {
-            if (client.readyState === client.OPEN) {
-                client.send(JSON.stringify({
-                    t: 'extend_request',
-                    code,
-                    remainingExtensions: MAX_EXTENDS - session.renewCount,
-                }));
-            }
-        }
-    }, SESSION_DURATION_MS - WARNING_BEFORE_EXPIRY_MS);
-    // da timer ne drži proces živim (bitno za testove)
-    warningTimeout.unref();
-    session.warningTimeoutId = warningTimeout;
-
-    // timeout na 15 minuta
-    const timeout = setTimeout(() => {
-        logInfo('SESSION EXPIRED for code', code, '- closing room and notifying clients');
-        for (const client of session.clients) {
-            if (client.readyState === client.OPEN) {
-                client.send(JSON.stringify({
-                    t: 'expired',
-                    code,
-                }));
-            }
-            socketRoom.delete(client);
-        }
-        sessions.delete(code);
-        removeSessionRecord(code);
-        logInfo('SESSION REMOVED (expired)', code);
-    }, SESSION_DURATION_MS);
-    timeout.unref();
-    session.timeoutId = timeout;
+function cleanupReservedCodes() {
+    const now = Date.now();
+    for (const [code, exp] of reservedCodes) {
+        if (exp < now) reservedCodes.delete(code);
+    }
 }
 
-/** Nakon što je razgovor započeo / soba aktivna — bez automatskog isteka. */
-function clearExpiryTimers(session) {
-    if (!session || session.expiryDisabled) return;
-
-    if (session.timeoutId) {
-        clearTimeout(session.timeoutId);
-        session.timeoutId = null;
-    }
-    if (session.warningTimeoutId) {
-        clearTimeout(session.warningTimeoutId);
-        session.warningTimeoutId = null;
-    }
-    session.expiryDisabled = true;
-    logInfo('Session expiry timers cleared (conversation active)', session.code);
+function releaseReservedCode(code) {
+    reservedCodes.delete(code);
 }
 
 function createSession(code, mode) {
@@ -82,69 +33,108 @@ function createSession(code, mode) {
         clients: new Set(),
         createdAt,
         renewCount: 0,
-        expiryDisabled: false,
-        timeoutId: null,
-        warningTimeoutId: null,
+        /** direct: nakon što jedan od dvojice ode, PIN je zaključan za nove dok zadnji ne ode. */
+        directPinLocked: false,
+        /** tko je javio E2E spreman (WebSocket); kad su oba u direct → hibernacija. */
+        e2eReadyFrom: new Set(),
+        /** manje DB upisa dok klijenti koriste isključivo E2E kanal */
+        hibernated: false,
     };
     sessions.set(code, session);
-    logInfo('New session created', code, 'type', session.type, 'at', createdAt.toISOString());
-    scheduleSessionTimers(code);
+    logInfo(`[room] OPEN (nova sesija) | pin=${code} | type=${session.type} | created=${createdAt.toISOString()}`);
     return session;
+}
+
+/** Bilo koja aktivnost nakon E2E-hibernacije: puni rad servera + upis u bazu. */
+function wakeSessionByCode(code) {
+    const session = sessions.get(code);
+    if (!session || !session.hibernated) return;
+    session.hibernated = false;
+    if (session.e2eReadyFrom) {
+        session.e2eReadyFrom.clear();
+    }
+    logInfo(`[room] WAKE (kraj hibernacije) | pin=${code}`);
+    persistSession(session, true);
 }
 
 // poziva se kad netko šalje join
 function joinRoom(ws, code, mode = 'direct') {
     let session = sessions.get(code);
 
-    const isNewSession = !session;
     if (!session) {
         session = createSession(code, mode);
-        logInfo('FIRST connection request for code', code, 'mode', session.type);
+        logInfo(`[room] prvi klijent otvara novu sobu | pin=${code} | type=${session.type}`);
+    }
+
+    if (session.hibernated) {
+        wakeSessionByCode(code);
+        session = sessions.get(code);
     }
 
     const preSize = session.clients.size;
 
-    // direct soba max 2 klijenta
+    if (session.type === 'direct' && session.directPinLocked) {
+        sendSecure(ws, {
+            t: 'error',
+            code,
+            reason: 'pin_occupied',
+            message: 'PIN is locked until the remaining participant leaves the room',
+        });
+        logInfo(`[join] ODBIJEN pin_occupied | pin=${code} | direct PIN zaključan za nove`);
+        return false;
+    }
+
     if (session.type === 'direct' && preSize >= 2) {
-        ws.send(JSON.stringify({
+        sendSecure(ws, {
             t: 'error',
             code,
             reason: 'room_full',
             message: 'Direct room already has 2 clients',
-        }));
-        logInfo('JOIN rejected (room_full) for code', code);
+        });
+        logInfo(`[join] ODBIJEN room_full | pin=${code} | direct soba već ima 2 klijenta`);
         return false;
     }
 
     session.clients.add(ws);
     socketRoom.set(ws, code);
+    releaseReservedCode(code);
 
     if (preSize === 0) {
-        logInfo('CLIENT #1 joined session', code, 'current size', session.clients.size);
+        logInfo(`[join] USPJEH | pin=${code} | klijent #1 | peers=${session.clients.size} | roomState=${session.type === 'direct' ? 'waiting_peer' : 'active'}`);
     } else if (preSize === 1 && session.type === 'direct') {
-        logInfo('CLIENT #2 joined session (direct)', code, 'current size', session.clients.size);
+        logInfo(`[join] USPJEH | pin=${code} | klijent #2 (direct povezan) | peers=${session.clients.size} | roomState=connected`);
     } else {
-        logInfo('CLIENT joined group session', code, 'current size', session.clients.size);
+        logInfo(`[join] USPJEH | pin=${code} | group +1 | peers=${session.clients.size}`);
     }
 
-    ws.send(JSON.stringify({ t: 'joined', code, mode: session.type }));
+    const peersInRoom = session.clients.size;
+    let roomState;
+    if (session.type === 'direct') {
+        roomState = peersInRoom === 1 ? 'waiting_peer' : 'connected';
+    } else {
+        roomState = 'active';
+    }
 
-    // kad direct soba ima točno 2 klijenta -> session_ready za oboje
+    sendSecure(ws, {
+        t: 'joined',
+        code,
+        mode: session.type,
+        roomState,
+        peersInRoom,
+    });
+
     if (session.type === 'direct' && session.clients.size === 2) {
-        logInfo('SESSION READY / CONNECTION ESTABLISHED for code', code, '- 2 clients connected');
+        logInfo(`[room] session_ready poslano obama | pin=${code} | direct oba klijenta povezana`);
         for (const client of session.clients) {
             if (client.readyState === client.OPEN) {
-                client.send(JSON.stringify({
+                sendSecure(client, {
                     t: 'session_ready',
                     code,
-                }));
+                    roomState: 'connected',
+                    peersInRoom: 2,
+                });
             }
         }
-        clearExpiryTimers(session);
-    }
-
-    if (session.type === 'group') {
-        clearExpiryTimers(session);
     }
 
     persistSession(session);
@@ -156,16 +146,50 @@ function removeSession(code) {
     const session = sessions.get(code);
     if (!session) return;
 
-    if (session.timeoutId) clearTimeout(session.timeoutId);
-    if (session.warningTimeoutId) clearTimeout(session.warningTimeoutId);
-
     for (const client of session.clients) {
         socketRoom.delete(client);
     }
 
     sessions.delete(code);
     removeSessionRecord(code);
-    logInfo('SESSION REMOVED (empty)', code);
+    logInfo(`[room] ZATVORENO (prazna soba, brisanje iz RAM+DB) | pin=${code}`);
+}
+
+/**
+ * Eksplicitno zatvaranje sobe: jedan klijent zatraži, svi se uklanjaju iz sobe.
+ * Inicijator dobije closedBy: 'self', ostali 'peer'.
+ */
+function closeSessionByClient(ws, code) {
+    const room = socketRoom.get(ws);
+    if (!room || room !== code) {
+        return { ok: false, reason: 'not_in_room' };
+    }
+
+    const session = sessions.get(code);
+    if (!session || !session.clients.has(ws)) {
+        return { ok: false, reason: 'not_in_room' };
+    }
+
+    const clients = [...session.clients];
+
+    for (const client of clients) {
+        socketRoom.delete(client);
+    }
+    sessions.delete(code);
+    removeSessionRecord(code);
+
+    for (const client of clients) {
+        if (client.readyState === client.OPEN) {
+            sendSecure(client, {
+                t: 'session_closed',
+                code,
+                closedBy: client === ws ? 'self' : 'peer',
+            });
+        }
+    }
+
+    logInfo(`[room] ZATVORENO (close_session zahtjev) | pin=${code} | klijenata bilo=${clients.length}`);
+    return { ok: true };
 }
 
 // kad se ws zatvori
@@ -179,78 +203,48 @@ function leaveRoom(ws) {
         return;
     }
 
+    const preSize = session.clients.size;
+
     session.clients.delete(ws);
     socketRoom.delete(ws);
 
-    logInfo('CLIENT left session', code, 'current size', session.clients.size);
+    if (session.e2eReadyFrom) {
+        session.e2eReadyFrom.delete(ws);
+    }
+    if (session.type === 'direct' && session.clients.size < 2) {
+        session.hibernated = false;
+    }
+
+    if (session.type === 'direct' && preSize === 2 && session.clients.size === 1) {
+        session.directPinLocked = true;
+        logInfo(`[room] PIN zaključan (ostao 1 u directu) | pin=${code}`);
+    }
+
+    logInfo(`[leave] klijent napušta sobu | pin=${code} | type=${session.type} | bilo_peers=${preSize} | ostalo_peers=${session.clients.size}`);
 
     if (session.clients.size === 0) {
-        logInfo('LAST CLIENT left, closing session', code);
+        logInfo(`[room] zadnji klijent otišao → brisanje sesije | pin=${code}`);
         removeSession(code);
     } else {
-        persistSession(session);
+        persistSession(session, true);
     }
 }
 
-// broadcast unutar sobe
-function broadcastToRoom(code, fromWs, payload) {
+/** Sesija ako je ovaj WebSocket u toj sobi; inače null. */
+function getSessionForClientInRoom(ws, code) {
+    if (typeof code !== 'string') return null;
+    if (socketRoom.get(ws) !== code) return null;
+    return sessions.get(code) || null;
+}
+
+// broadcast unutar sobe (payload = objekt koji se šalje u box svakom primatelju)
+function broadcastToRoom(code, fromWs, payloadObj) {
     const session = sessions.get(code);
     if (!session) return;
 
     for (const client of session.clients) {
         if (client !== fromWs && client.readyState === client.OPEN) {
-            client.send(payload);
-        }
-    }
-}
-
-// produženje sessiona
-function extendSession(ws, code) {
-    const session = sessions.get(code);
-    if (!session) {
-        ws.send(JSON.stringify({
-            t: 'error',
-            reason: 'no_room',
-            message: 'Room does not exist',
-        }));
-        logInfo('EXTEND refused (no_room) for code', code);
-        return;
-    }
-
-    if (session.expiryDisabled) {
-        ws.send(JSON.stringify({
-            t: 'error',
-            reason: 'expiry_disabled',
-            message: 'Session has no expiry timer',
-        }));
-        logInfo('EXTEND refused (expiry_disabled) for code', code);
-        return;
-    }
-
-    if (session.renewCount >= MAX_EXTENDS) {
-        ws.send(JSON.stringify({
-            t: 'error',
-            reason: 'max_extensions',
-            message: 'Maximum extensions reached',
-        }));
-        logInfo('EXTEND refused (max_extensions) for code', code);
-        return;
-    }
-
-    session.renewCount += 1;
-    logInfo('Session extended', code, 'renewCount', session.renewCount);
-
-    persistSession(session);
-
-    scheduleSessionTimers(code);
-
-    for (const client of session.clients) {
-        if (client.readyState === client.OPEN) {
-            client.send(JSON.stringify({
-                t: 'extended',
-                code,
-                renewCount: session.renewCount,
-            }));
+            sendSecure(client, payloadObj);
         }
     }
 }
@@ -264,17 +258,86 @@ function listActiveRooms() {
             type: session.type,
             clientCount: session.clients.size,
             createdAt: session.createdAt.toISOString(),
-            renewCount: session.renewCount,
-            expiryDisabled: !!session.expiryDisabled,
+            pinLocked: session.type === 'direct' && !!session.directPinLocked,
+            hibernated: !!session.hibernated,
         });
     }
     return out.sort((a, b) => a.pin.localeCompare(b.pin));
+}
+
+/**
+ * Detaljna provjera: RAM (aktivna sesija), SQLite, kratka rezervacija nakon GET /api/room-code.
+ */
+function getRoomCodeAvailabilityDetails(code) {
+    cleanupReservedCodes();
+    const inMemorySession = sessions.has(code);
+    const inDatabase = sessionCodeExists(code);
+    const exp = reservedCodes.get(code);
+    const reserved = exp !== undefined && exp > Date.now();
+    const occupied = inMemorySession || inDatabase || reserved;
+    return {
+        inMemorySession,
+        inDatabase,
+        reserved,
+        occupied,
+        available: !occupied,
+    };
+}
+
+function isRoomCodeTaken(code) {
+    return getRoomCodeAvailabilityDetails(code).occupied;
+}
+
+/**
+ * Novi jedinstveni 16-znakovni kod (miješani znakovi); rezerviran ~5 min do joina.
+ */
+function allocateUniqueRoomCode() {
+    for (let attempt = 0; attempt < 256; attempt += 1) {
+        const code = randomRoomCode16();
+        if (!isRoomCodeTaken(code)) {
+            reservedCodes.set(code, Date.now() + RESERVE_MS);
+            return code;
+        }
+    }
+    throw new Error('Could not allocate a unique room code');
+}
+
+/** Puna sinkronizacija: SQLite tablica = točno stanje aktivnih sesija u RAM-u. */
+function syncAllSessionsToDatabase() {
+    const now = new Date().toISOString();
+    const rows = [];
+    for (const session of sessions.values()) {
+        rows.push({
+            code: session.code,
+            type: session.type,
+            created_at: session.createdAt instanceof Date
+                ? session.createdAt.toISOString()
+                : session.createdAt,
+            renew_count: session.renewCount,
+            client_count: session.clients.size,
+            updated_at: now,
+        });
+    }
+    logInfo(`[db] SQLite sync (replace all) | aktivnih_sesija=${rows.length}`);
+    replaceAllSessionsFromMemory(rows);
+}
+
+/** Za logiranje pri WS close: koji PIN je klijent imao prije leaveRoom. */
+function getRoomCodeForWs(ws) {
+    return socketRoom.get(ws) || null;
 }
 
 module.exports = {
     joinRoom,
     leaveRoom,
     broadcastToRoom,
-    extendSession,
+    getSessionForClientInRoom,
+    wakeSessionByCode,
+    closeSessionByClient,
     listActiveRooms,
+    isRoomCodeTaken,
+    getRoomCodeAvailabilityDetails,
+    allocateUniqueRoomCode,
+    syncAllSessionsToDatabase,
+    getRoomCodeForWs,
 };
