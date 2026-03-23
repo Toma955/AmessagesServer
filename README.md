@@ -93,6 +93,7 @@ Provjera je li kod zauzet (aktivna sesija u RAM-u, zapis u bazi ili kratka rezer
 | `pin` | string | 16-znakovni kod sobe |
 | `type` | `"direct"` \| `"group"` | Način rada |
 | `clientCount` | number | Broj povezanih WebSocket klijenata |
+| `peers` | array | Redom po ulasku u sobu: `slot`, `wsId`, `remoteAddress`, `remotePort`, opc. `forwardedFor`, `registeredAt` — **samo RAM**, evidencija priključka; **ne filtrira** tko smije ući (uparivanje je isključivo po `pin`) |
 | `createdAt` | string (ISO) | Vrijeme nastanka sesije |
 | `pinLocked` | boolean | U **direct** sobi: `true` kad je jedan peer otišao i PIN je zaključan za nove dok zadnji ne ode |
 | `hibernated` | boolean | `true` kad su oba klijenta u **direct** sobi poslala `e2e_ready` (standby, manje DB upisa) |
@@ -103,7 +104,7 @@ Provjera je li kod zauzet (aktivna sesija u RAM-u, zapis u bazi ili kratka rezer
 
 ### Admin: dnevnik po sobi i prekid veze (web na `GET /`)
 
-Na početnoj stranici (`/`) tablica aktivnih soba ima po redu: **Konzola** (otvara **SSE** tok događaja samo za taj PIN), **Prekini A** / **Prekini B** (samo **direct**: prvi spojeni = A, drugi = B; nasilno zatvara taj WebSocket).
+Na početnoj stranici (`/`) tablica aktivnih soba ima po redu: **Konzola** (otvara **SSE** tok događaja samo za taj PIN), stupac **Priključci (RAM)** (`ws` id + IP:port po peeru), **Prekini A** / **Prekini B** (samo **direct**: prvi spojeni = A, drugi = B; nasilno zatvara taj WebSocket).
 
 - **`GET /api/rooms/:pin/events`** — JSON `{ "pin", "events": [ { "ts", "kind", "message" } ] }` (povijest u memoriji servera).
 - **`GET /api/rooms/:pin/events/stream`** — **Server-Sent Events**; prvo se pošalje cijela povijest, zatim novi redovi uživo.

@@ -293,10 +293,19 @@
             if (!rooms.length) {
                 return '<p class="empty">Nema aktivnih soba.</p>';
             }
-            const th = '<tr><th>PIN</th><th>Tip</th><th>Klijenti</th><th>PIN zaključan</th><th>Hibernacija</th><th>Otvaranje</th><th>Akcije</th></tr>';
+            const th = '<tr><th>PIN</th><th>Tip</th><th>Klijenti</th><th>Priključci (RAM)</th><th>PIN zaključan</th><th>Hibernacija</th><th>Otvaranje</th><th>Akcije</th></tr>';
             const tr = rooms.map((r) => {
                 const direct = r.type === 'direct';
                 const n = r.clientCount | 0;
+                const peers = Array.isArray(r.peers) ? r.peers : [];
+                const peerTxt = peers.length
+                    ? peers.map((p) => {
+                        const ip = p.remoteAddress != null ? String(p.remoteAddress) : '—';
+                        const port = p.remotePort != null ? String(p.remotePort) : '—';
+                        const id = p.wsId != null ? 'ws' + p.wsId : '?';
+                        return id + ' ' + ip + ':' + port;
+                    }).join(' · ')
+                    : '—';
                 let btns = '<button type="button" class="console" data-act="console" data-pin="' + esc(r.pin) + '">Konzola</button> ';
                 if (direct && n >= 1) {
                     btns += '<button type="button" class="danger" data-act="kill-first" data-pin="' + esc(r.pin) + '">Prekini A</button> ';
@@ -304,7 +313,7 @@
                 if (direct && n >= 2) {
                     btns += '<button type="button" class="danger" data-act="kill-second" data-pin="' + esc(r.pin) + '">Prekini B</button>';
                 }
-                return '<tr data-pin-row="' + esc(r.pin) + '"><td class="pin">' + esc(r.pin) + '</td><td>' + esc(r.type) + '</td><td>' + esc(String(n)) + '</td><td>' + esc(r.pinLocked ? 'da' : 'ne') + '</td><td>' + esc(r.hibernated ? 'da' : 'ne') + '</td><td>' + esc(r.createdAt) + '</td><td class="actions">' + btns + '</td></tr>';
+                return '<tr data-pin-row="' + esc(r.pin) + '"><td class="pin">' + esc(r.pin) + '</td><td>' + esc(r.type) + '</td><td>' + esc(String(n)) + '</td><td class="pin">' + esc(peerTxt) + '</td><td>' + esc(r.pinLocked ? 'da' : 'ne') + '</td><td>' + esc(r.hibernated ? 'da' : 'ne') + '</td><td>' + esc(r.createdAt) + '</td><td class="actions">' + btns + '</td></tr>';
             }).join('');
             return '<table><thead>' + th + '</thead><tbody>' + tr + '</tbody></table>';
         }
@@ -324,6 +333,7 @@
                 pin: r.pin,
                 type: r.type,
                 clientCount: r.clientCount,
+                peers: Array.isArray(r.peers) ? r.peers : [],
                 pinLocked: !!r.pinLocked,
                 hibernated: !!r.hibernated,
                 createdAt: r.createdAt,

@@ -1,13 +1,22 @@
 const { logInfo } = require('../utils/logger');
+const { getWsTransportMeta } = require('../utils/wsTransportMeta');
 const { persistSession, removeSessionRecord, replaceAllSessionsFromMemory, sessionCodeExists } = require('../db/sessionStore');
 const { randomRoomCode16 } = require('../utils/generateRoomCode');
 const { sendSecure } = require('../crypto/boxChannel');
 const { RESERVE_MS } = require('./roomConstants');
 const { pushRoomEvent, clearRoomDiagnostics } = require('./roomDiagnostics');
 
+/**
+ * Uparivanje u sobu isključivo po PIN-u (string koda). IP, port i X-Forwarded-For
+ * idu samo u RAM evidenciju — ne filtriraju tko smije ući.
+ */
+
 // code -> session
-// session = { code, type, clients, createdAt }
+// session = { code, type, clients, createdAt, clientTransportByWs, ... }
 const sessions = new Map();
+
+/** Zadnji join zapisi po PIN-u (samo RAM; briše se s obradom sesije). */
+const pinJoinRamLedger = new Map();
 
 // ws -> code
 const socketRoom = new Map();
@@ -26,12 +35,43 @@ function releaseReservedCode(code) {
     reservedCodes.delete(code);
 }
 
+function appendJoinLedgerEntry(code, entry) {
+    const arr = pinJoinRamLedger.get(code);
+    if (arr) {
+        arr.push(entry);
+    } else {
+        pinJoinRamLedger.set(code, [entry]);
+    }
+}
+
+/** @param {import('ws')} ws */
+function registerPeerInRamLedger(session, ws, code) {
+    if (!session.clientTransportByWs) {
+        session.clientTransportByWs = new Map();
+    }
+    const meta = getWsTransportMeta(ws);
+    const registeredAt = new Date().toISOString();
+    session.clientTransportByWs.set(ws, { ...meta, registeredAt });
+    const wsLabel = ws._clientId != null ? `ws${ws._clientId}` : 'ws?';
+    appendJoinLedgerEntry(code, {
+        at: registeredAt,
+        wsId: ws._clientId ?? null,
+        remoteAddress: meta.remoteAddress,
+        remotePort: meta.remotePort,
+        forwardedFor: meta.forwardedFor,
+    });
+    const peerIndex = session.clients.size;
+    logInfo(`[join] RAM spremište (ledger) | pin=${code} | red=${peerIndex} | ip=${meta.remoteAddress ?? '—'} | port=${meta.remotePort ?? '—'} | xff=${meta.forwardedFor ?? '—'} | ${wsLabel}`);
+}
+
 function createSession(code, mode) {
     const createdAt = new Date();
     const session = {
         code,
         type: mode === 'group' ? 'group' : 'direct',
         clients: new Set(),
+        /** @type {Map<import('ws'), { remoteAddress: string | null, remotePort: number | null, forwardedFor: string | null, registeredAt: string }>} */
+        clientTransportByWs: new Map(),
         createdAt,
         renewCount: 0,
         /** direct: nakon što jedan od dvojice ode, PIN je zaključan za nove dok zadnji ne ode. */
@@ -142,6 +182,7 @@ function joinRoom(ws, code, mode = 'direct') {
     session.clients.add(ws);
     socketRoom.set(ws, code);
     releaseReservedCode(code);
+    registerPeerInRamLedger(session, ws, code);
 
     if (preSize === 0) {
         logInfo(`[join] USPJEH | pin=${code} | klijent #1 | peers=${session.clients.size} | roomState=${session.type === 'direct' ? 'waiting_peer' : 'active'}`);
@@ -149,7 +190,7 @@ function joinRoom(ws, code, mode = 'direct') {
             ? 'Strana A (prvi klijent): spojen. Čeka se drugi peer (strana B).'
             : 'Prvi klijent u group sobi spojen.');
     } else if (preSize === 1 && session.type === 'direct') {
-        logInfo(`[join] USPJEH | pin=${code} | klijent #2 (direct povezan) | peers=${session.clients.size} | roomState=connected`);
+        logInfo(`[join] USPJEH | pin=${code} | klijent #2 (direct povezan) | peers=${session.clients.size} | roomState=connected | isti_PIN_soba_spojena`);
         pushRoomEvent(code, 'join', 'Strana B (drugi klijent): spojen — oba u direct sobi (session_ready).');
     } else {
         logInfo(`[join] USPJEH | pin=${code} | group +1 | peers=${session.clients.size}`);
@@ -204,6 +245,7 @@ function removeSession(code) {
     }
 
     sessions.delete(code);
+    pinJoinRamLedger.delete(code);
     removeSessionRecord(code);
     logInfo(`[room] ZATVORENO (prazna soba, brisanje iz RAM+DB) | pin=${code}`);
 }
@@ -231,6 +273,7 @@ function closeSessionByClient(ws, code) {
         socketRoom.delete(client);
     }
     sessions.delete(code);
+    pinJoinRamLedger.delete(code);
     removeSessionRecord(code);
 
     clearRoomDiagnostics(code);
@@ -271,6 +314,9 @@ function leaveRoom(ws) {
 
     session.clients.delete(ws);
     socketRoom.delete(ws);
+    if (session.clientTransportByWs) {
+        session.clientTransportByWs.delete(ws);
+    }
 
     pushRoomEvent(code, 'leave', `${sideLabel} odspojen. Ostalo peerova: ${session.clients.size}.`);
 
@@ -320,6 +366,17 @@ function broadcastToRoom(code, fromWs, payloadObj) {
 function listActiveRooms() {
     const out = [];
     for (const session of sessions.values()) {
+        const peers = [...session.clients].map((c, slot) => {
+            const t = session.clientTransportByWs && session.clientTransportByWs.get(c);
+            return {
+                slot,
+                wsId: c._clientId ?? null,
+                remoteAddress: t ? t.remoteAddress : null,
+                remotePort: t ? t.remotePort : null,
+                forwardedFor: t ? t.forwardedFor : null,
+                registeredAt: t ? t.registeredAt : null,
+            };
+        });
         out.push({
             pin: session.code,
             type: session.type,
@@ -327,6 +384,7 @@ function listActiveRooms() {
             createdAt: session.createdAt.toISOString(),
             pinLocked: session.type === 'direct' && !!session.directPinLocked,
             hibernated: !!session.hibernated,
+            peers,
         });
     }
     return out.sort((a, b) => a.pin.localeCompare(b.pin));

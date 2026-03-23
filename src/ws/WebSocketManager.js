@@ -25,11 +25,16 @@ class WebSocketManager {
     /** @returns {import('ws').Server} */
     attach() {
         this.wss = new WebSocket.Server({ server: this.httpServer });
-        this.wss.on('connection', (ws) => this._onConnection(ws));
+        this.wss.on('connection', (ws, req) => this._onConnection(ws, req));
         return this.wss;
     }
 
-    _onConnection(ws) {
+    /**
+     * @param {import('ws')} ws
+     * @param {import('http').IncomingMessage} req
+     */
+    _onConnection(ws, req) {
+        ws._httpUpgradeReq = req;
         ws._clientId = ++this._seq;
         logInfo(`[WS] OPEN | id=ws${ws._clientId} | nova TCP/WebSocket veza`);
 
