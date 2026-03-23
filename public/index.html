@@ -116,8 +116,7 @@
         .console-toolbar {
             display: inline-flex;
             gap: 0.35rem;
-            margin-left: 0.5rem;
-            vertical-align: middle;
+            flex-shrink: 0;
         }
         .console-panel {
             margin-top: 0.75rem;
@@ -137,10 +136,18 @@
         .console-panel .kind { color: #9cdcfe; }
         .console-panel .ts { color: #6a9955; }
         .console-title {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.5rem 0.75rem;
             font-size: 0.75rem;
             font-weight: 600;
             margin-bottom: 0.35rem;
             color: var(--muted);
+        }
+        .console-title .console-title-main {
+            flex: 1 1 12rem;
+            min-width: 0;
         }
     </style>
 </head>
@@ -249,7 +256,7 @@
 
             const wrap = document.createElement('div');
             wrap.id = 'console-wrap-' + pin;
-            wrap.innerHTML = '<div class="console-title">Konzola sobe <span class="pin">' + esc(pin) + '</span><span class="console-toolbar"><button type="button" class="copy-c" title="Kopiraj cijeli sadržaj konzole u međuspremnik">Kopiraj konzolu</button><button type="button" class="close-c">Zatvori</button></span></div><div class="console-panel" id="console-panel-' + pin + '"><pre id="console-log-' + pin + '" style="margin:0;white-space:pre-wrap;"></pre></div>';
+            wrap.innerHTML = '<div class="console-title"><span class="console-title-main">Konzola sobe <span class="pin">' + esc(pin) + '</span></span><span class="console-toolbar"><button type="button" class="copy-c" title="Kopiraj cijeli sadržaj konzole u međuspremnik">Kopiraj konzolu</button><button type="button" class="close-c">Zatvori</button></span></div><div class="console-panel" id="console-panel-' + pin + '"><pre id="console-log-' + pin + '" style="margin:0;white-space:pre-wrap;"></pre></div>';
             const row = document.querySelector('[data-pin-row="' + esc(pin) + '"]');
             if (row) {
                 row.after(wrap);

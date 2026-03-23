@@ -189,6 +189,9 @@ function joinRoom(ws, code, mode = 'direct') {
         pushRoomEvent(code, 'join', session.type === 'direct'
             ? 'Strana A (prvi klijent): spojen. Čeka se drugi peer (strana B).'
             : 'Prvi klijent u group sobi spojen.');
+        if (session.type === 'direct') {
+            pushRoomEvent(code, 'system', 'Za B: drugi uređaj ili druga app mora otvoriti svoju WebSocket vezu na isti server i poslati isti PIN — jedna veza = jedan klijent (SQLite/RAM ne mogu dodati drugog bez drugog joina).');
+        }
     } else if (preSize === 1 && session.type === 'direct') {
         logInfo(`[join] USPJEH | pin=${code} | klijent #2 (direct povezan) | peers=${session.clients.size} | roomState=connected | isti_PIN_soba_spojena`);
         pushRoomEvent(code, 'join', 'Strana B (drugi klijent): spojen — oba u direct sobi (session_ready).');
