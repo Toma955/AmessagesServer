@@ -168,7 +168,6 @@
         const dbMatch = document.getElementById('db-match');
 
         const LS_KEY = 'amessages_admin_token';
-        /** Ako je na serveru ADMIN_TOKEN: postavi token u konzoli: localStorage.setItem('amessages_admin_token', '…') */
         function getToken() {
             return (localStorage.getItem(LS_KEY) || '').trim();
         }

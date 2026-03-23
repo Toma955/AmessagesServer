@@ -18,7 +18,7 @@ Node.js server za sobe preko **WebSocket** + **libsodium crypto_box**, s **SQLit
 
 WebSocket URL: `ws://<host>:<PORT>/` (isti server kao HTTP; nema posebnog patha).
 
-Odgovor na `GET /` uključuje zaglavlje `Document-Policy: force-load-at-top` kako preglednik ne bi automatski skakao na `#:~:text=…` poveznice iz pretrage.
+Odgovor na `GET /` uključuje `Cache-Control: no-store` (svjež `index.html` nakon deploya) i `Document-Policy: force-load-at-top` kako preglednik ne bi automatski skakao na `#:~:text=…` poveznice iz pretrage.
 
 ---
 
