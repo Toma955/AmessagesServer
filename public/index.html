@@ -107,20 +107,11 @@
         .match.ok { background: #e8f5e9; color: #1b5e20; }
         .match.warn { background: #fff3e0; color: #e65100; }
         .actions { white-space: nowrap; }
-        .admin-token-row {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-            margin-bottom: 0.75rem;
-            font-size: 0.85rem;
-        }
-        .admin-token-row input {
-            font: inherit;
-            padding: 0.35rem 0.5rem;
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            min-width: 200px;
+        .console-toolbar {
+            display: inline-flex;
+            gap: 0.35rem;
+            margin-left: 0.5rem;
+            vertical-align: middle;
         }
         .console-panel {
             margin-top: 0.75rem;
@@ -152,12 +143,6 @@
         <h1>Amessages Server</h1>
         <p class="sub">Pregled aktivnih soba, konzola događaja po PIN-u i prekid veze po strani (A = prvi klijent, B = drugi u direct sobi).</p>
 
-        <div class="admin-token-row">
-            <label for="adminToken">Admin token (samo ako je na serveru postavljen <code>ADMIN_TOKEN</code>):</label>
-            <input type="password" id="adminToken" placeholder="(opcionalno)" autocomplete="off">
-            <button type="button" id="saveToken">Spremi u preglednik</button>
-        </div>
-
         <div class="toolbar">
             <button type="button" id="refresh">Osvježi</button>
             <span class="status" id="status"></span>
@@ -181,18 +166,11 @@
         const ramTable = document.getElementById('ram-table');
         const dbTable = document.getElementById('db-table');
         const dbMatch = document.getElementById('db-match');
-        const adminTokenEl = document.getElementById('adminToken');
 
         const LS_KEY = 'amessages_admin_token';
-        adminTokenEl.value = localStorage.getItem(LS_KEY) || '';
-        document.getElementById('saveToken').addEventListener('click', () => {
-            localStorage.setItem(LS_KEY, adminTokenEl.value.trim());
-            statusEl.textContent = 'Token spremljen.';
-            statusEl.classList.remove('err');
-        });
-
+        /** Ako je na serveru ADMIN_TOKEN: postavi token u konzoli: localStorage.setItem('amessages_admin_token', '…') */
         function getToken() {
-            return adminTokenEl.value.trim() || localStorage.getItem(LS_KEY) || '';
+            return (localStorage.getItem(LS_KEY) || '').trim();
         }
 
         function authHeaders() {
@@ -220,6 +198,34 @@
             pre.parentElement.scrollTop = pre.parentElement.scrollHeight;
         }
 
+        async function copyConsoleLog(pin) {
+            const pre = document.getElementById('console-log-' + pin);
+            if (!pre) return;
+            const text = 'PIN: ' + pin + '\n\n' + pre.innerText;
+            try {
+                await navigator.clipboard.writeText(text);
+                statusEl.textContent = 'Konzola kopirana u međuspremnik.';
+                statusEl.classList.remove('err');
+            } catch {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.setAttribute('readonly', '');
+                ta.style.position = 'fixed';
+                ta.style.left = '-9999px';
+                document.body.appendChild(ta);
+                ta.select();
+                try {
+                    document.execCommand('copy');
+                    statusEl.textContent = 'Konzola kopirana u međuspremnik.';
+                    statusEl.classList.remove('err');
+                } catch {
+                    statusEl.textContent = 'Kopiranje nije uspjelo (dopusti clipboard ili kopiraj ručno).';
+                    statusEl.classList.add('err');
+                }
+                document.body.removeChild(ta);
+            }
+        }
+
         function closeConsole(pin) {
             if (eventSources[pin]) {
                 eventSources[pin].close();
@@ -238,7 +244,7 @@
 
             const wrap = document.createElement('div');
             wrap.id = 'console-wrap-' + pin;
-            wrap.innerHTML = '<div class="console-title">Konzola sobe <span class="pin">' + esc(pin) + '</span> <button type="button" class="close-c">Zatvori</button></div><div class="console-panel" id="console-panel-' + pin + '"><pre id="console-log-' + pin + '" style="margin:0;white-space:pre-wrap;"></pre></div>';
+            wrap.innerHTML = '<div class="console-title">Konzola sobe <span class="pin">' + esc(pin) + '</span><span class="console-toolbar"><button type="button" class="copy-c">Kopiraj sve</button><button type="button" class="close-c">Zatvori</button></span></div><div class="console-panel" id="console-panel-' + pin + '"><pre id="console-log-' + pin + '" style="margin:0;white-space:pre-wrap;"></pre></div>';
             const row = document.querySelector('[data-pin-row="' + esc(pin) + '"]');
             if (row) {
                 row.after(wrap);
@@ -246,6 +252,7 @@
                 ramTable.appendChild(wrap);
             }
             wrap.querySelector('.close-c').addEventListener('click', () => closeConsole(pin));
+            wrap.querySelector('.copy-c').addEventListener('click', () => copyConsoleLog(pin));
 
             const t = getToken();
             const streamUrl = '/api/rooms/' + encodeURIComponent(pin) + '/events/stream'

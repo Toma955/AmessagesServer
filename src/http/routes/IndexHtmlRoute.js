@@ -12,7 +12,11 @@ class IndexHtmlRoute {
 
     handle(_req, res) {
         if (this.indexHtml) {
-            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.writeHead(200, {
+                'Content-Type': 'text/html; charset=utf-8',
+                // Sprječava automatski scroll na #:~:text=... (npr. iz rezultata pretrage).
+                'Document-Policy': 'force-load-at-top',
+            });
             return res.end(this.indexHtml);
         }
         res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
