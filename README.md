@@ -106,7 +106,7 @@ Provjera je li kod zauzet (aktivna sesija u RAM-u, zapis u bazi ili kratka rezer
 
 ### Admin: dnevnik po sobi i prekid veze (web na `GET /`)
 
-Na početnoj stranici (`/`) tablica aktivnih soba ima po redu: **Konzola** (otvara **SSE** tok događaja samo za taj PIN; gumb **Kopiraj sve** u konzoli kopira cijeli dnevnik u međuspremnik), stupac **Priključci (RAM)** (`ws` id + IP:port po peeru), **Prekini A** / **Prekini B** (samo **direct**: prvi spojeni = A, drugi = B; nasilno zatvara taj WebSocket). Ako je postavljen `ADMIN_TOKEN`, u konzoli preglednika jednom postavi `localStorage.setItem('amessages_admin_token', '<token>')` (ili koristi `?admin_token=` na stream URL-u).
+Na početnoj stranici (`/`) tablica aktivnih soba ima po redu: **Konzola** (otvara **SSE** tok događaja samo za taj PIN; gumb **Kopiraj konzolu** kopira cijeli dnevnik u međuspremnik), stupac **Priključci (RAM)** (`ws` id + IP:port po peeru), **Prekini A** / **Prekini B** (samo **direct**: prvi spojeni = A, drugi = B; nasilno zatvara taj WebSocket). Ako je postavljen `ADMIN_TOKEN`, u konzoli preglednika jednom postavi `localStorage.setItem('amessages_admin_token', '<token>')` (ili koristi `?admin_token=` na stream URL-u).
 
 - **`GET /api/rooms/:pin/events`** — JSON `{ "pin", "events": [ { "ts", "kind", "message" } ] }` (povijest u memoriji servera).
 - **`GET /api/rooms/:pin/events/stream`** — **Server-Sent Events**; prvo se pošalje cijela povijest, zatim novi redovi uživo.
