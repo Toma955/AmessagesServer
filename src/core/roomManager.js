@@ -3,6 +3,7 @@ const { persistSession, removeSessionRecord, replaceAllSessionsFromMemory, sessi
 const { randomRoomCode16 } = require('../utils/generateRoomCode');
 const { sendSecure } = require('../crypto/boxChannel');
 const { RESERVE_MS } = require('./roomConstants');
+const { pushRoomEvent, clearRoomDiagnostics } = require('./roomDiagnostics');
 
 // code -> session
 // session = { code, type, clients, createdAt }
@@ -42,6 +43,7 @@ function createSession(code, mode) {
     };
     sessions.set(code, session);
     logInfo(`[room] OPEN (nova sesija) | pin=${code} | type=${session.type} | created=${createdAt.toISOString()}`);
+    pushRoomEvent(code, 'system', `Nova sesija: tip=${session.type}. Čeka se prvi klijent (strana A).`);
     return session;
 }
 
@@ -54,6 +56,7 @@ function wakeSessionByCode(code) {
         session.e2eReadyFrom.clear();
     }
     logInfo(`[room] WAKE (kraj hibernacije) | pin=${code}`);
+    pushRoomEvent(code, 'system', 'Soba izlazi iz hibernacije (nova aktivnost).');
     persistSession(session, true);
 }
 
@@ -81,6 +84,7 @@ function joinRoom(ws, code, mode = 'direct') {
             message: 'PIN is locked until the remaining participant leaves the room',
         });
         logInfo(`[join] ODBIJEN pin_occupied | pin=${code} | direct PIN zaključan za nove`);
+        pushRoomEvent(code, 'system', 'Join odbijen: PIN zaključan dok jedan peer ostane u sobi.');
         return false;
     }
 
@@ -92,6 +96,7 @@ function joinRoom(ws, code, mode = 'direct') {
             message: 'Direct room already has 2 clients',
         });
         logInfo(`[join] ODBIJEN room_full | pin=${code} | direct soba već ima 2 klijenta`);
+        pushRoomEvent(code, 'system', 'Join odbijen: direct soba puna (2/2).');
         return false;
     }
 
@@ -101,10 +106,15 @@ function joinRoom(ws, code, mode = 'direct') {
 
     if (preSize === 0) {
         logInfo(`[join] USPJEH | pin=${code} | klijent #1 | peers=${session.clients.size} | roomState=${session.type === 'direct' ? 'waiting_peer' : 'active'}`);
+        pushRoomEvent(code, 'join', session.type === 'direct'
+            ? 'Strana A (prvi klijent): spojen. Čeka se drugi peer (strana B).'
+            : 'Prvi klijent u group sobi spojen.');
     } else if (preSize === 1 && session.type === 'direct') {
         logInfo(`[join] USPJEH | pin=${code} | klijent #2 (direct povezan) | peers=${session.clients.size} | roomState=connected`);
+        pushRoomEvent(code, 'join', 'Strana B (drugi klijent): spojen — oba u direct sobi (session_ready).');
     } else {
         logInfo(`[join] USPJEH | pin=${code} | group +1 | peers=${session.clients.size}`);
+        pushRoomEvent(code, 'join', `Novi klijent u group sobi (ukupno ${session.clients.size} peerova).`);
     }
 
     const peersInRoom = session.clients.size;
@@ -125,6 +135,7 @@ function joinRoom(ws, code, mode = 'direct') {
 
     if (session.type === 'direct' && session.clients.size === 2) {
         logInfo(`[room] session_ready poslano obama | pin=${code} | direct oba klijenta povezana`);
+        pushRoomEvent(code, 'system', 'session_ready: oba klijenta mogu razmjenjivati signale/poruke.');
         for (const client of session.clients) {
             if (client.readyState === client.OPEN) {
                 sendSecure(client, {
@@ -145,6 +156,9 @@ function joinRoom(ws, code, mode = 'direct') {
 function removeSession(code) {
     const session = sessions.get(code);
     if (!session) return;
+
+    pushRoomEvent(code, 'system', 'Soba uklonjena (zadnji klijent otišao).');
+    clearRoomDiagnostics(code);
 
     for (const client of session.clients) {
         socketRoom.delete(client);
@@ -172,11 +186,15 @@ function closeSessionByClient(ws, code) {
 
     const clients = [...session.clients];
 
+    pushRoomEvent(code, 'system', 'close_session: jedan klijent zatvara cijelu sobu za sve.');
+
     for (const client of clients) {
         socketRoom.delete(client);
     }
     sessions.delete(code);
     removeSessionRecord(code);
+
+    clearRoomDiagnostics(code);
 
     for (const client of clients) {
         if (client.readyState === client.OPEN) {
@@ -204,9 +222,18 @@ function leaveRoom(ws) {
     }
 
     const preSize = session.clients.size;
+    const clientsBefore = [...session.clients];
+    const leftIdx = clientsBefore.indexOf(ws);
+    const sideLabel = session.type === 'direct' && leftIdx === 0
+        ? 'Strana A (prvi klijent)'
+        : session.type === 'direct' && leftIdx === 1
+            ? 'Strana B (drugi klijent)'
+            : `Klijent #${leftIdx + 1}`;
 
     session.clients.delete(ws);
     socketRoom.delete(ws);
+
+    pushRoomEvent(code, 'leave', `${sideLabel} odspojen. Ostalo peerova: ${session.clients.size}.`);
 
     if (session.e2eReadyFrom) {
         session.e2eReadyFrom.delete(ws);
@@ -218,6 +245,7 @@ function leaveRoom(ws) {
     if (session.type === 'direct' && preSize === 2 && session.clients.size === 1) {
         session.directPinLocked = true;
         logInfo(`[room] PIN zaključan (ostao 1 u directu) | pin=${code}`);
+        pushRoomEvent(code, 'system', 'Direct: ostao jedan peer — PIN zaključan za nove dok ne ode i zadnji.');
     }
 
     logInfo(`[leave] klijent napušta sobu | pin=${code} | type=${session.type} | bilo_peers=${preSize} | ostalo_peers=${session.clients.size}`);
@@ -327,6 +355,34 @@ function getRoomCodeForWs(ws) {
     return socketRoom.get(ws) || null;
 }
 
+/**
+ * Admin: nasilno zatvori WebSocket jedne strane u directu (prvi u Setu = A, drugi = B).
+ * @param {'first'|'second'} slot
+ */
+function forceDisconnectClientBySlot(code, slot) {
+    const session = sessions.get(code);
+    if (!session) {
+        return { ok: false, reason: 'no_room' };
+    }
+    if (slot !== 'first' && slot !== 'second') {
+        return { ok: false, reason: 'bad_slot' };
+    }
+    const clients = [...session.clients];
+    const idx = slot === 'first' ? 0 : 1;
+    if (idx >= clients.length) {
+        return { ok: false, reason: 'no_peer' };
+    }
+    const ws = clients[idx];
+    const sideLabel = slot === 'first' ? 'A (prvi klijent)' : 'B (drugi klijent)';
+    pushRoomEvent(code, 'system', `Administrator: prekid veze za stranu ${sideLabel}.`);
+    try {
+        ws.close(4400, 'admin_disconnect');
+    } catch {
+        return { ok: false, reason: 'close_failed' };
+    }
+    return { ok: true };
+}
+
 module.exports = {
     joinRoom,
     leaveRoom,
@@ -340,4 +396,5 @@ module.exports = {
     allocateUniqueRoomCode,
     syncAllSessionsToDatabase,
     getRoomCodeForWs,
+    forceDisconnectClientBySlot,
 };

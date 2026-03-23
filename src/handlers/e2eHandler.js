@@ -1,5 +1,6 @@
 const { isValidCode } = require('../utils/validateCode');
 const { getSessionForClientInRoom } = require('../core/roomManager');
+const { pushRoomEvent } = require('../core/roomDiagnostics');
 const { persistSession } = require('../db/sessionStore');
 const { sendSecure } = require('../crypto/boxChannel');
 const { logInfo } = require('../utils/logger');
@@ -43,6 +44,7 @@ function handleE2eReady(ws, msg) {
         persistSession(session, true);
         session.hibernated = true;
         logInfo(`[e2e_ready] HIBERNACIJA UKLJUČENA | pin=${code} | oba klijenta na E2E standby`);
+        pushRoomEvent(code, 'system', 'e2e_ready: oba klijenta na izravnom E2E kanalu — soba u hibernaciji (manje DB upisa).');
         for (const client of session.clients) {
             if (client.readyState === client.OPEN) {
                 sendSecure(client, {
@@ -53,6 +55,7 @@ function handleE2eReady(ws, msg) {
             }
         }
     } else {
+        pushRoomEvent(code, 'system', 'e2e_ready: jedan klijent spreman — čeka se drugi peer.');
         sendSecure(ws, {
             t: 'e2e_ready_ack',
             code,

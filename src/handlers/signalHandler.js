@@ -1,5 +1,6 @@
 const { isValidCode } = require('../utils/validateCode');
 const { broadcastToRoom, getSessionForClientInRoom, wakeSessionByCode } = require('../core/roomManager');
+const { pushRoomEvent } = require('../core/roomDiagnostics');
 const { sendSecure } = require('../crypto/boxChannel');
 
 function handleSignal(ws, msg) {
@@ -23,6 +24,7 @@ function handleSignal(ws, msg) {
     }
 
     wakeSessionByCode(code);
+    pushRoomEvent(code, 'traffic', 'signal: relay WebRTC / SDP signala prema drugom peeru.');
     broadcastToRoom(code, ws, msg);
 }
 

@@ -692,3 +692,63 @@ test('msg relay između dva peer-a u direct sobi', async () => {
     wsA.close();
     wsB.close();
 });
+
+test('direct: PIN od 16 nula, razmjena poruka A↔B i zatvaranje sobe', async () => {
+    const code = '0000000000000000';
+    const wsA = new WebSocket(WS_URL);
+    const wsB = new WebSocket(WS_URL);
+
+    await new Promise((resolve, reject) => {
+        let opened = 0;
+        const onOpen = () => {
+            opened += 1;
+            if (opened === 2) resolve();
+        };
+        wsA.on('open', onOpen);
+        wsB.on('open', onOpen);
+        setTimeout(() => reject(new Error('Timeout spajanja')), 5000);
+    });
+
+    const ctxA = await exchangeKeys(wsA);
+    const ctxB = await exchangeKeys(wsB);
+
+    wsA.send(encryptClientToServer({ t: 'join', code, mode: 'direct' }, ctxA.serverPk, ctxA.clientSk));
+    await waitForInnerType(wsA, 'joined', ctxA);
+
+    wsB.send(encryptClientToServer({ t: 'join', code, mode: 'direct' }, ctxB.serverPk, ctxB.clientSk));
+    await Promise.all([
+        waitForInnerType(wsB, 'joined', ctxB),
+        waitForInnerType(wsA, 'session_ready', ctxA),
+        waitForInnerType(wsB, 'session_ready', ctxB),
+    ]);
+
+    const toB = waitForInnerType(wsB, 'msg', ctxB);
+    wsA.send(encryptClientToServer({
+        t: 'msg',
+        code,
+        text: 'poruka-a-primjer',
+    }, ctxA.serverPk, ctxA.clientSk));
+    const gotOnB = await toB;
+    expect(gotOnB.text).toBe('poruka-a-primjer');
+
+    const toA = waitForInnerType(wsA, 'msg', ctxA);
+    wsB.send(encryptClientToServer({
+        t: 'msg',
+        code,
+        text: 'poruka-b-odgovor',
+    }, ctxB.serverPk, ctxB.clientSk));
+    const gotOnA = await toA;
+    expect(gotOnA.text).toBe('poruka-b-odgovor');
+
+    const closedA = waitForInnerType(wsA, 'session_closed', ctxA);
+    const closedB = waitForInnerType(wsB, 'session_closed', ctxB);
+    wsA.send(encryptClientToServer({ t: 'close_session', code }, ctxA.serverPk, ctxA.clientSk));
+    const [ca, cb] = await Promise.all([closedA, closedB]);
+    expect(ca.code).toBe(code);
+    expect(cb.code).toBe(code);
+    expect(ca.closedBy).toBe('self');
+    expect(cb.closedBy).toBe('peer');
+
+    wsA.close();
+    wsB.close();
+});

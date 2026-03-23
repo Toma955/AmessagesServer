@@ -7,6 +7,8 @@ function getConfig() {
         NODE_ENV: process.env.NODE_ENV || 'development',
         /** 0 = bez periodičkog synca RAM→SQLite */
         SYNC_DB_INTERVAL_MS: Number.isFinite(syncMs) ? Math.max(0, syncMs) : 300000,
+        /** Ako je postavljen, admin API (konfig. sobe, prekid strane) traži Bearer ili X-Admin-Token. */
+        ADMIN_TOKEN: process.env.ADMIN_TOKEN || '',
     };
 }
 

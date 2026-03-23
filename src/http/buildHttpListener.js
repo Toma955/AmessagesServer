@@ -15,7 +15,9 @@ const { RoomCodeCheckPostRoute } = require('./routes/RoomCodeCheckPostRoute');
 const { RoomCodeAllocateRoute } = require('./routes/RoomCodeAllocateRoute');
 const { RoomsListRoute } = require('./routes/RoomsListRoute');
 const { IndexHtmlRoute } = require('./routes/IndexHtmlRoute');
+const { RoomAdminApiRoute } = require('./routes/RoomAdminApiRoute');
 const { logInfo } = require('../utils/logger');
+const { getConfig } = require('../config/env');
 
 function loadIndexHtml() {
     const indexHtmlPath = path.join(__dirname, '..', '..', 'public', 'index.html');
@@ -35,6 +37,7 @@ function buildHttpListener(options = {}) {
     const indexHtml = options.indexHtml !== undefined ? options.indexHtml : loadIndexHtml();
     const li = options.logInfo || logInfo;
     const le = options.logError || logError;
+    const cfg = options.config || getConfig();
 
     const shared = {
         isValidCode,
@@ -46,12 +49,20 @@ function buildHttpListener(options = {}) {
         logError: le,
     };
 
+    const adminRoute = new RoomAdminApiRoute({
+        isValidCode,
+        getAdminToken: () => cfg.ADMIN_TOKEN,
+        logInfo: li,
+        logError: le,
+    });
+
     const routes = [
         new HealthRoute(),
         new RoomCodeCheckGetRoute(shared),
         new RoomCodeCheckPostRoute(shared),
         new RoomCodeAllocateRoute(shared),
         new RoomsListRoute(shared),
+        adminRoute,
         new IndexHtmlRoute({ indexHtml }),
     ];
 

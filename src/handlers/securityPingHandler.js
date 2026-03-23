@@ -1,6 +1,7 @@
 const { isValidCode } = require('../utils/validateCode');
 const { sendSecure } = require('../crypto/boxChannel');
 const { getSessionForClientInRoom, broadcastToRoom, wakeSessionByCode } = require('../core/roomManager');
+const { pushRoomEvent } = require('../core/roomDiagnostics');
 const { logInfo } = require('../utils/logger');
 
 /**
@@ -38,6 +39,7 @@ function handlePingSelf(ws, msg) {
     }
 
     logInfo(`[ping_self] pin=${code} | peers=${peersInRoom} | roomState=${roomState}`);
+    pushRoomEvent(code, 'traffic', `ping_self: provjera sobe (${peersInRoom} peerova, ${roomState}).`);
 
     sendSecure(ws, {
         t: 'ping_self_ack',
@@ -85,6 +87,7 @@ function handlePeerPing(ws, msg) {
     wakeSessionByCode(code);
 
     logInfo(`[peer_ping] relay | pin=${code}`);
+    pushRoomEvent(code, 'traffic', 'peer_ping: relay prema drugom peeru.');
 
     broadcastToRoom(code, ws, {
         t: 'peer_ping',
@@ -127,6 +130,7 @@ function handlePeerPong(ws, msg) {
     wakeSessionByCode(code);
 
     logInfo(`[peer_pong] relay | pin=${code}`);
+    pushRoomEvent(code, 'traffic', 'peer_pong: relay prema drugom peeru.');
 
     broadcastToRoom(code, ws, {
         t: 'peer_pong',
