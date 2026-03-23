@@ -62,6 +62,45 @@ function wakeSessionByCode(code) {
 
 // poziva se kad netko šalje join
 function joinRoom(ws, code, mode = 'direct') {
+    const existingCode = socketRoom.get(ws);
+    if (existingCode === code) {
+        const sess = sessions.get(code);
+        if (sess && sess.clients.has(ws)) {
+            const peersInRoom = sess.clients.size;
+            let roomState;
+            if (sess.type === 'direct') {
+                roomState = peersInRoom === 1 ? 'waiting_peer' : 'connected';
+            } else {
+                roomState = 'active';
+            }
+            sendSecure(ws, {
+                t: 'joined',
+                code,
+                mode: sess.type,
+                roomState,
+                peersInRoom,
+            });
+            if (sess.type === 'direct' && peersInRoom === 2) {
+                for (const client of sess.clients) {
+                    if (client.readyState === client.OPEN) {
+                        sendSecure(client, {
+                            t: 'session_ready',
+                            code,
+                            roomState: 'connected',
+                            peersInRoom: 2,
+                        });
+                    }
+                }
+            }
+            logInfo(`[join] idempotent (isti WebSocket već u sobi) | pin=${code} | peers=${peersInRoom}`);
+            return true;
+        }
+    }
+    if (existingCode && existingCode !== code) {
+        logInfo(`[join] napuštanje prethodne sobe pri joinu na drugi PIN | stari_pin=${existingCode} | novi_pin=${code}`);
+        leaveRoom(ws);
+    }
+
     let session = sessions.get(code);
 
     if (!session) {

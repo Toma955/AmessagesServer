@@ -7,7 +7,8 @@ function handleJoin(ws, msg) {
     const code = msg.code;
     const mode = msg.mode || 'direct';
 
-    logInfo(`[join] zahtjev (handleJoin) | pin=${code} | mode=${mode}`);
+    const wsId = ws && typeof ws._clientId === 'number' ? `ws${ws._clientId}` : '?';
+    logInfo(`[join] zahtjev (handleJoin) | ${wsId} | pin=${code} | mode=${mode}`);
 
     if (!isValidCode(code)) {
         logInfo(`[join] odbijen nevaljan PIN | pin=${code}`);
