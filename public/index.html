@@ -60,6 +60,11 @@
             font-weight: 500;
         }
         button.copy-c:hover { background: #c8e6c9; }
+        button.copy-err {
+            background: #fff3e0;
+            border-color: #ffb74d;
+        }
+        button.copy-err:hover { background: #ffe0b2; }
         .status {
             font-size: 0.85rem;
             color: var(--muted);
@@ -149,6 +154,12 @@
             flex: 1 1 12rem;
             min-width: 0;
         }
+        #room-consoles-dock {
+            margin-top: 0.75rem;
+        }
+        #room-consoles-dock > .console-wrap-outer {
+            margin-bottom: 1rem;
+        }
     </style>
 </head>
 <body>
@@ -159,12 +170,14 @@
         <div class="toolbar">
             <button type="button" id="refresh">Osvježi</button>
             <span class="status" id="status"></span>
+            <button type="button" id="copyStatus" title="Kopiraj tekst statusa (npr. grešku učitavanja)">Kopiraj status</button>
         </div>
 
         <section>
             <h2>Aktivne sobe (RAM)</h2>
-            <p class="hint">Strana A/B vrijedi za <strong>direct</strong> (redoslijed spajanja). Konzola prikazuje join, relay signala/poruka, e2e, ping, leave.</p>
-            <div id="ram-table"></div>
+            <p class="hint">Strana A/B vrijedi za <strong>direct</strong> (redoslijed spajanja). Konzola ostaje otvorena dok je ne zatvoriš — osvježavanje tablice je neovisno.</p>
+            <div id="rooms-table-mount"></div>
+            <div id="room-consoles-dock"></div>
         </section>
 
         <section>
@@ -176,7 +189,8 @@
 
     <script>
         const statusEl = document.getElementById('status');
-        const ramTable = document.getElementById('ram-table');
+        const roomsTableMount = document.getElementById('rooms-table-mount');
+        const roomConsolesDock = document.getElementById('room-consoles-dock');
         const dbTable = document.getElementById('db-table');
         const dbMatch = document.getElementById('db-match');
 
@@ -210,32 +224,50 @@
             pre.parentElement.scrollTop = pre.parentElement.scrollHeight;
         }
 
+        function copyTextToClipboard(text, okMsg) {
+            const msg = okMsg || 'Kopirano u međuspremnik.';
+            return (async () => {
+                try {
+                    await navigator.clipboard.writeText(text);
+                    statusEl.textContent = msg;
+                    statusEl.classList.remove('err');
+                } catch {
+                    const ta = document.createElement('textarea');
+                    ta.value = text;
+                    ta.setAttribute('readonly', '');
+                    ta.style.position = 'fixed';
+                    ta.style.left = '-9999px';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    try {
+                        document.execCommand('copy');
+                        statusEl.textContent = msg;
+                        statusEl.classList.remove('err');
+                    } catch {
+                        statusEl.textContent = 'Kopiranje nije uspjelo.';
+                        statusEl.classList.add('err');
+                    }
+                    document.body.removeChild(ta);
+                }
+            })();
+        }
+
         async function copyConsoleLog(pin) {
             const pre = document.getElementById('console-log-' + pin);
             if (!pre) return;
             const text = 'PIN: ' + pin + '\n\n' + pre.innerText;
-            try {
-                await navigator.clipboard.writeText(text);
-                statusEl.textContent = 'Konzola kopirana u međuspremnik.';
-                statusEl.classList.remove('err');
-            } catch {
-                const ta = document.createElement('textarea');
-                ta.value = text;
-                ta.setAttribute('readonly', '');
-                ta.style.position = 'fixed';
-                ta.style.left = '-9999px';
-                document.body.appendChild(ta);
-                ta.select();
-                try {
-                    document.execCommand('copy');
-                    statusEl.textContent = 'Konzola kopirana u međuspremnik.';
-                    statusEl.classList.remove('err');
-                } catch {
-                    statusEl.textContent = 'Kopiranje nije uspjelo (dopusti clipboard ili kopiraj ručno).';
-                    statusEl.classList.add('err');
-                }
-                document.body.removeChild(ta);
-            }
+            await copyTextToClipboard(text, 'Konzola kopirana u međuspremnik.');
+        }
+
+        function copyConsoleErrorsOnly(pin) {
+            const pre = document.getElementById('console-log-' + pin);
+            if (!pre) return;
+            const lines = pre.innerText.split(/\n/).filter((line) => {
+                const L = line.toLowerCase();
+                return /greška|error|failed|http\s+\d|unauthorized|odbijen|⚠/.test(L);
+            });
+            const text = lines.length ? lines.join('\n') : '(nema prepoznatih redaka greške u konzoli)';
+            copyTextToClipboard('PIN: ' + pin + '\n\n' + text, 'Greške iz konzole kopirane.');
         }
 
         function closeConsole(pin) {
@@ -256,15 +288,12 @@
 
             const wrap = document.createElement('div');
             wrap.id = 'console-wrap-' + pin;
-            wrap.innerHTML = '<div class="console-title"><span class="console-title-main">Konzola sobe <span class="pin">' + esc(pin) + '</span></span><span class="console-toolbar"><button type="button" class="copy-c" title="Kopiraj cijeli sadržaj konzole u međuspremnik">Kopiraj konzolu</button><button type="button" class="close-c">Zatvori</button></span></div><div class="console-panel" id="console-panel-' + pin + '"><pre id="console-log-' + pin + '" style="margin:0;white-space:pre-wrap;"></pre></div>';
-            const row = document.querySelector('[data-pin-row="' + esc(pin) + '"]');
-            if (row) {
-                row.after(wrap);
-            } else {
-                ramTable.appendChild(wrap);
-            }
+            wrap.className = 'console-wrap-outer';
+            wrap.innerHTML = '<div class="console-title"><span class="console-title-main">Konzola sobe <span class="pin">' + esc(pin) + '</span></span><span class="console-toolbar"><button type="button" class="copy-c" title="Cijeli dnevnik konzole">Kopiraj sve</button><button type="button" class="copy-err" title="Samo retke koji izgledaju kao greške">Kopiraj greške</button><button type="button" class="close-c">Zatvori</button></span></div><div class="console-panel" id="console-panel-' + pin + '"><pre id="console-log-' + pin + '" style="margin:0;white-space:pre-wrap;"></pre></div>';
+            roomConsolesDock.appendChild(wrap);
             wrap.querySelector('.close-c').addEventListener('click', () => closeConsole(pin));
             wrap.querySelector('.copy-c').addEventListener('click', () => copyConsoleLog(pin));
+            wrap.querySelector('.copy-err').addEventListener('click', () => copyConsoleErrorsOnly(pin));
 
             const t = getToken();
             const streamUrl = '/api/rooms/' + encodeURIComponent(pin) + '/events/stream'
@@ -378,8 +407,8 @@
                 const rooms = (data.rooms || []).map(normalizeRamRow);
                 const database = (data.database || []).map(normalizeDbRow);
 
-                ramTable.innerHTML = ramTableHtml(rooms);
-                ramTable.querySelectorAll('button[data-act]').forEach((btn) => {
+                roomsTableMount.innerHTML = ramTableHtml(rooms);
+                roomsTableMount.querySelectorAll('button[data-act]').forEach((btn) => {
                     btn.addEventListener('click', () => {
                         const pin = btn.getAttribute('data-pin');
                         const act = btn.getAttribute('data-act');
@@ -411,6 +440,14 @@
         }
 
         document.getElementById('refresh').addEventListener('click', load);
+        document.getElementById('copyStatus').addEventListener('click', () => {
+            const t = statusEl.textContent || '';
+            if (!t.trim()) {
+                statusEl.textContent = 'Nema teksta statusa za kopirati.';
+                return;
+            }
+            copyTextToClipboard(t, 'Status kopiran.');
+        });
         load();
         setInterval(load, 5000);
     </script>
