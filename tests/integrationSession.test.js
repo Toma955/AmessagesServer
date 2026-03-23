@@ -1,5 +1,7 @@
+const http = require('http');
 const WebSocket = require('ws');
-const { server } = require('../src/server');
+const sodium = require('libsodium-wrappers');
+const { server, listeningPromise } = require('../src/server');
 
 const WS_URL = 'ws://localhost:3000';
 
@@ -30,6 +32,10 @@ function waitForType(ws, expectedType, timeoutMs = 5000) {
     });
 }
 
+beforeAll(async () => {
+    await listeningPromise;
+});
+
 afterAll((done) => {
     if (server && server.close) {
         server.close(() => done());
@@ -37,6 +43,21 @@ afterAll((done) => {
         done();
     }
 });
+
+async function exchangeKeys(ws) {
+    await sodium.ready;
+    const kp = sodium.crypto_box_keypair();
+    const publicKey = Buffer.from(kp.publicKey).toString('base64');
+
+    ws.send(JSON.stringify({ t: 'get_server_key' }));
+    const serverKeyMsg = await waitForType(ws, 'server_key');
+    expect(serverKeyMsg.publicKey).toBeTruthy();
+    expect(typeof serverKeyMsg.publicKey).toBe('string');
+
+    ws.send(JSON.stringify({ t: 'client_key', publicKey }));
+    const ack = await waitForType(ws, 'client_key_ack');
+    expect(ack.ok).toBe(true);
+}
 
 test('ping + join + session_ready + E2E exchange', async () => {
     const code = 'Abc123456789!@#$'; // 16 ASCII znakova
@@ -64,11 +85,15 @@ test('ping + join + session_ready + E2E exchange', async () => {
     const pong = await waitForType(wsA, 'pong');
     expect(pong.alive).toBe(true);
 
-    // 2) pripremi čekanje session_ready PRIJE join-a
+    // 2) razmjena ključeva s serverom (oba klijenta)
+    await exchangeKeys(wsA);
+    await exchangeKeys(wsB);
+
+    // 3) pripremi čekanje session_ready PRIJE join-a
     const readyAPromise = waitForType(wsA, 'session_ready');
     const readyBPromise = waitForType(wsB, 'session_ready');
 
-    // 3) A i B šalju join s istim kodom
+    // 4) A i B šalju join s istim kodom
     wsA.send(JSON.stringify({ t: 'join', code, mode: 'direct' }));
     wsB.send(JSON.stringify({ t: 'join', code, mode: 'direct' }));
 
@@ -80,11 +105,11 @@ test('ping + join + session_ready + E2E exchange', async () => {
     expect(sessionReadyA.code).toBe(code);
     expect(sessionReadyB.code).toBe(code);
 
-    // 4) pripremi čekanje E2E ključeva PRIJE slanja signal poruka
+    // 5) pripremi čekanje E2E ključeva PRIJE slanja signal poruka
     const receivedOnB = waitForType(wsB, 'signal');
     const receivedOnA = waitForType(wsA, 'signal');
 
-    // 5) A i B šalju "ključeve"
+    // 6) A i B šalju "ključeve"
     wsA.send(JSON.stringify({
         t: 'signal',
         code,
@@ -109,4 +134,27 @@ test('ping + join + session_ready + E2E exchange', async () => {
 
     wsA.close();
     wsB.close();
+});
+
+test('GET /api/rooms returns rooms and database arrays', async () => {
+    const data = await new Promise((resolve, reject) => {
+        http.get('http://127.0.0.1:3000/api/rooms', (res) => {
+            let buf = '';
+            res.on('data', (c) => {
+                buf += c;
+            });
+            res.on('end', () => {
+                try {
+                    resolve(JSON.parse(buf));
+                } catch (e) {
+                    reject(e);
+                }
+            });
+        }).on('error', reject);
+    });
+
+    expect(data).toHaveProperty('rooms');
+    expect(data).toHaveProperty('database');
+    expect(Array.isArray(data.rooms)).toBe(true);
+    expect(Array.isArray(data.database)).toBe(true);
 });

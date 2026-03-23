@@ -1,4 +1,5 @@
 const { logInfo } = require('../utils/logger');
+const { persistSession, removeSessionRecord } = require('../db/sessionStore');
 
 const SESSION_DURATION_MS = 15 * 60 * 1000;   // 15 min
 const WARNING_BEFORE_EXPIRY_MS = 30 * 1000;   // 30 sek prije isteka
@@ -14,6 +15,7 @@ const socketRoom = new Map();
 function scheduleSessionTimers(code) {
     const session = sessions.get(code);
     if (!session) return;
+    if (session.expiryDisabled) return;
 
     // očisti stare timere
     if (session.timeoutId) clearTimeout(session.timeoutId);
@@ -49,10 +51,27 @@ function scheduleSessionTimers(code) {
             socketRoom.delete(client);
         }
         sessions.delete(code);
+        removeSessionRecord(code);
         logInfo('SESSION REMOVED (expired)', code);
     }, SESSION_DURATION_MS);
     timeout.unref();
     session.timeoutId = timeout;
+}
+
+/** Nakon što je razgovor započeo / soba aktivna — bez automatskog isteka. */
+function clearExpiryTimers(session) {
+    if (!session || session.expiryDisabled) return;
+
+    if (session.timeoutId) {
+        clearTimeout(session.timeoutId);
+        session.timeoutId = null;
+    }
+    if (session.warningTimeoutId) {
+        clearTimeout(session.warningTimeoutId);
+        session.warningTimeoutId = null;
+    }
+    session.expiryDisabled = true;
+    logInfo('Session expiry timers cleared (conversation active)', session.code);
 }
 
 function createSession(code, mode) {
@@ -63,6 +82,7 @@ function createSession(code, mode) {
         clients: new Set(),
         createdAt,
         renewCount: 0,
+        expiryDisabled: false,
         timeoutId: null,
         warningTimeoutId: null,
     };
@@ -120,7 +140,14 @@ function joinRoom(ws, code, mode = 'direct') {
                 }));
             }
         }
+        clearExpiryTimers(session);
     }
+
+    if (session.type === 'group') {
+        clearExpiryTimers(session);
+    }
+
+    persistSession(session);
 
     return true;
 }
@@ -137,6 +164,7 @@ function removeSession(code) {
     }
 
     sessions.delete(code);
+    removeSessionRecord(code);
     logInfo('SESSION REMOVED (empty)', code);
 }
 
@@ -159,6 +187,8 @@ function leaveRoom(ws) {
     if (session.clients.size === 0) {
         logInfo('LAST CLIENT left, closing session', code);
         removeSession(code);
+    } else {
+        persistSession(session);
     }
 }
 
@@ -187,6 +217,16 @@ function extendSession(ws, code) {
         return;
     }
 
+    if (session.expiryDisabled) {
+        ws.send(JSON.stringify({
+            t: 'error',
+            reason: 'expiry_disabled',
+            message: 'Session has no expiry timer',
+        }));
+        logInfo('EXTEND refused (expiry_disabled) for code', code);
+        return;
+    }
+
     if (session.renewCount >= MAX_EXTENDS) {
         ws.send(JSON.stringify({
             t: 'error',
@@ -199,6 +239,8 @@ function extendSession(ws, code) {
 
     session.renewCount += 1;
     logInfo('Session extended', code, 'renewCount', session.renewCount);
+
+    persistSession(session);
 
     scheduleSessionTimers(code);
 
@@ -213,9 +255,26 @@ function extendSession(ws, code) {
     }
 }
 
+/** Popis aktivnih soba iz RAM-a (stvarni WebSocket klijenti). */
+function listActiveRooms() {
+    const out = [];
+    for (const session of sessions.values()) {
+        out.push({
+            pin: session.code,
+            type: session.type,
+            clientCount: session.clients.size,
+            createdAt: session.createdAt.toISOString(),
+            renewCount: session.renewCount,
+            expiryDisabled: !!session.expiryDisabled,
+        });
+    }
+    return out.sort((a, b) => a.pin.localeCompare(b.pin));
+}
+
 module.exports = {
     joinRoom,
     leaveRoom,
     broadcastToRoom,
     extendSession,
+    listActiveRooms,
 };

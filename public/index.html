@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="hr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Amessages Server</title>
+    <style>
+        :root {
+            --fg: #111;
+            --muted: #555;
+            --border: #ddd;
+            --bg: #fff;
+        }
+        * { box-sizing: border-box; }
+        html, body {
+            margin: 0;
+            min-height: 100%;
+            background: var(--bg);
+            font-family: system-ui, -apple-system, sans-serif;
+            color: var(--fg);
+        }
+        .wrap {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 2rem 1.25rem 3rem;
+        }
+        h1 {
+            font-size: 1.35rem;
+            font-weight: 600;
+            margin: 0 0 0.35rem;
+        }
+        .sub {
+            color: var(--muted);
+            font-size: 0.9rem;
+            margin-bottom: 1.5rem;
+        }
+        .toolbar {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            margin-bottom: 1.25rem;
+        }
+        button {
+            font: inherit;
+            padding: 0.4rem 0.85rem;
+            cursor: pointer;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: #f8f8f8;
+        }
+        button:hover { background: #eee; }
+        .status {
+            font-size: 0.85rem;
+            color: var(--muted);
+        }
+        .status.err { color: #b00020; }
+        section {
+            margin-bottom: 2rem;
+        }
+        h2 {
+            font-size: 1rem;
+            font-weight: 600;
+            margin: 0 0 0.5rem;
+        }
+        .hint {
+            font-size: 0.8rem;
+            color: var(--muted);
+            margin-bottom: 0.5rem;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.875rem;
+        }
+        th, td {
+            text-align: left;
+            padding: 0.5rem 0.65rem;
+            border-bottom: 1px solid var(--border);
+        }
+        th {
+            font-weight: 600;
+            background: #fafafa;
+        }
+        .pin {
+            font-family: ui-monospace, monospace;
+            letter-spacing: 0.02em;
+        }
+        .empty {
+            color: var(--muted);
+            font-style: italic;
+            padding: 0.75rem 0;
+        }
+        .match {
+            display: inline-block;
+            margin-left: 0.5rem;
+            font-size: 0.75rem;
+            font-weight: 500;
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+        }
+        .match.ok { background: #e8f5e9; color: #1b5e20; }
+        .match.warn { background: #fff3e0; color: #e65100; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <h1>Amessages Server</h1>
+        <p class="sub">Pregled aktivnih soba — podaci iz RAM-a (uživo) i iz SQLite baze (sinkronizirano).</p>
+
+        <div class="toolbar">
+            <button type="button" id="refresh">Osvježi</button>
+            <span class="status" id="status"></span>
+        </div>
+
+        <section>
+            <h2>Aktivne sobe (RAM)</h2>
+            <p class="hint">Stvarni broj WebSocket klijenata po PIN-u (kodu sobe).</p>
+            <div id="ram-table"></div>
+        </section>
+
+        <section>
+            <h2>SQLite <span id="db-match"></span></h2>
+            <p class="hint">Zadnji zapisi u bazi — trebaju odgovarati RAM-u nakon svake promjene.</p>
+            <div id="db-table"></div>
+        </section>
+    </div>
+
+    <script>
+        const statusEl = document.getElementById('status');
+        const ramTable = document.getElementById('ram-table');
+        const dbTable = document.getElementById('db-table');
+        const dbMatch = document.getElementById('db-match');
+
+        function esc(s) {
+            const d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        function tableHtml(rows, columns) {
+            if (!rows.length) {
+                return '<p class="empty">Nema aktivnih soba.</p>';
+            }
+            const th = columns.map((c) => '<th>' + esc(c.label) + '</th>').join('');
+            const tr = rows.map((row) => {
+                const td = columns.map((c) => '<td' + (c.mono ? ' class="pin"' : '') + '>' + esc(String(row[c.key] ?? '—')) + '</td>').join('');
+                return '<tr>' + td + '</tr>';
+            }).join('');
+            return '<table><thead><tr>' + th + '</tr></thead><tbody>' + tr + '</tbody></table>';
+        }
+
+        function normalizeDbRow(r) {
+            return {
+                pin: r.pin,
+                type: r.type,
+                clientCount: r.clientCount,
+                createdAt: r.createdAt,
+                renewCount: r.renewCount,
+                updatedAt: r.updatedAt || '—',
+            };
+        }
+
+        function normalizeRamRow(r) {
+            return {
+                pin: r.pin,
+                type: r.type,
+                clientCount: r.clientCount,
+                createdAt: r.createdAt,
+                renewCount: r.renewCount,
+                expiryDisabled: r.expiryDisabled ? 'da' : 'ne',
+            };
+        }
+
+        async function load() {
+            statusEl.textContent = 'Učitavanje…';
+            statusEl.classList.remove('err');
+            try {
+                const res = await fetch('/api/rooms', { cache: 'no-store' });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+                const rooms = data.rooms || [];
+                const database = (data.database || []).map(normalizeDbRow);
+
+                ramTable.innerHTML = tableHtml(rooms.map(normalizeRamRow), [
+                    { key: 'pin', label: 'PIN (kod sobe)', mono: true },
+                    { key: 'type', label: 'Tip' },
+                    { key: 'clientCount', label: 'Klijenti' },
+                    { key: 'renewCount', label: 'Produženja' },
+                    { key: 'expiryDisabled', label: 'Bez isteka' },
+                    { key: 'createdAt', label: 'Otvaranje' },
+                ]);
+
+                dbTable.innerHTML = tableHtml(database, [
+                    { key: 'pin', label: 'PIN (kod sobe)', mono: true },
+                    { key: 'type', label: 'Tip' },
+                    { key: 'clientCount', label: 'Klijenti' },
+                    { key: 'renewCount', label: 'Produženja' },
+                    { key: 'createdAt', label: 'Otvaranje' },
+                    { key: 'updatedAt', label: 'Zadnji zapis' },
+                ]);
+
+                const pinsRam = new Set(rooms.map((r) => r.pin));
+                const pinsDb = new Set(database.map((r) => r.pin));
+                let match = pinsRam.size === pinsDb.size;
+                if (match) {
+                    for (const p of pinsRam) {
+                        if (!pinsDb.has(p)) { match = false; break; }
+                    }
+                }
+                dbMatch.innerHTML = match
+                    ? '<span class="match ok">skladno s RAM-om</span>'
+                    : '<span class="match warn">razlika u odnosu na RAM</span>';
+
+                statusEl.textContent = 'Ažurirano: ' + new Date().toLocaleString('hr-HR');
+            } catch (e) {
+                statusEl.textContent = 'Greška: ' + (e.message || String(e));
+                statusEl.classList.add('err');
+            }
+        }
+
+        document.getElementById('refresh').addEventListener('click', load);
+        load();
+        setInterval(load, 5000);
+    </script>
+</body>
+</html>
