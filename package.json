@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "test": "NODE_ENV=test DATABASE_PATH=:memory: jest --runInBand --detectOpenHandles=false"
+    "test": "NODE_ENV=test DATABASE_PATH=:memory: jest --runInBand --detectOpenHandles=false",
+    "verify:direct": "node scripts/verify-direct-pin.js"
   },
   "keywords": [],
   "author": "",
