@@ -752,3 +752,36 @@ test('direct: PIN od 16 nula, razmjena poruka A↔B i zatvaranje sobe', async ()
     wsA.close();
     wsB.close();
 });
+
+test('direct: PIN 1111111111111111 — oba klijenta (regresija: ne smije biti krivo kao ping)', async () => {
+    const code = '1111111111111111';
+    const wsA = new WebSocket(WS_URL);
+    const wsB = new WebSocket(WS_URL);
+
+    await new Promise((resolve, reject) => {
+        let opened = 0;
+        const onOpen = () => {
+            opened += 1;
+            if (opened === 2) resolve();
+        };
+        wsA.on('open', onOpen);
+        wsB.on('open', onOpen);
+        setTimeout(() => reject(new Error('Timeout spajanja')), 5000);
+    });
+
+    const ctxA = await exchangeKeys(wsA);
+    const ctxB = await exchangeKeys(wsB);
+
+    wsA.send(encryptClientToServer({ t: 'join', code, mode: 'direct' }, ctxA.serverPk, ctxA.clientSk));
+    await waitForInnerType(wsA, 'joined', ctxA);
+
+    wsB.send(encryptClientToServer({ t: 'join', code, mode: 'direct' }, ctxB.serverPk, ctxB.clientSk));
+    await Promise.all([
+        waitForInnerType(wsB, 'joined', ctxB),
+        waitForInnerType(wsA, 'session_ready', ctxA),
+        waitForInnerType(wsB, 'session_ready', ctxB),
+    ]);
+
+    wsA.close();
+    wsB.close();
+});

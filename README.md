@@ -127,8 +127,6 @@ Poruke su **JSON string** u tekstu WebSocket okvira, **ne** šifrirane.
 | `get_server_key` | klijent → server | Odgovor: `{ "t": "server_key", "publicKey": "<base64>" }` (serverov `crypto_box` javni ključ) |
 | `client_key` | klijent → server | Tijelo: `{ "t": "client_key", "publicKey": "<base64>" }` — klijentov `crypto_box` javni ključ (točno `crypto_box_PUBLICKEYBYTES` bajtova nakon dekodiranja). Odgovor: `{ "t": "client_key_ack", "ok": true }` ili `{ "t": "error", "reason": "invalid_client_key", ... }` |
 
-Posebno: ako je u root poruci `code === "1111111111111111"` i ostalo odgovara ping logici, tretira se kao healthcheck (isti kao `ping`).
-
 **Bez** uspješnog `client_key` server na daljnje poruke (osim gore) odgovara plaintext:
 
 ```json

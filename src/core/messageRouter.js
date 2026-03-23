@@ -20,10 +20,8 @@ function routeMessage(ws, raw) {
         return;
     }
 
-    // healthcheck posebni kod
-    if (msg.code === '1111111111111111') {
-        return handlePing(ws, msg);
-    }
+    // Samo plaintext { "t": "ping" } — ne smijemo hvatati root "code" jer klijenti mogu slati
+    // { "t": "box", "code": "<PIN>", ... } s PIN-om 1111111111111111 (sudar sa starim healthcheckom).
 
     if (msg.t === 'ping') {
         return handlePing(ws, msg);
