@@ -543,6 +543,45 @@ function getRoomCodeForWs(ws) {
     return socketRoom.get(ws) || null;
 }
 
+/**
+ * Admin: nasilno zatvori WebSocket jedne strane u directu (prvi u Setu = A, drugi = B).
+ * INSIDE (jedan WS, dva logična slota): oba gumba zatvaraju istu fizičku vezu.
+ * @param {'first'|'second'} slot
+ */
+function forceDisconnectClientBySlot(code, slot) {
+    const session = sessions.get(code);
+    if (!session) {
+        return { ok: false, reason: 'no_room' };
+    }
+    if (slot !== 'first' && slot !== 'second') {
+        return { ok: false, reason: 'bad_slot' };
+    }
+    const clients = [...session.clients];
+    const idx = slot === 'first' ? 0 : 1;
+    if (idx >= clients.length) {
+        if (session.type === 'direct' && session.insideProtocol && clients.length === 1 && idx === 1) {
+            const ws = clients[0];
+            pushRoomEvent(code, 'system', 'Administrator: prekid veze za stranu B (INSIDE, ista WebSocket veza).');
+            try {
+                ws.close(4400, 'admin_disconnect');
+            } catch {
+                return { ok: false, reason: 'close_failed' };
+            }
+            return { ok: true };
+        }
+        return { ok: false, reason: 'no_peer' };
+    }
+    const ws = clients[idx];
+    const sideLabel = slot === 'first' ? 'A (prvi klijent)' : 'B (drugi klijent)';
+    pushRoomEvent(code, 'system', `Administrator: prekid veze za stranu ${sideLabel}.`);
+    try {
+        ws.close(4400, 'admin_disconnect');
+    } catch {
+        return { ok: false, reason: 'close_failed' };
+    }
+    return { ok: true };
+}
+
 module.exports = {
     joinRoom,
     leaveRoom,
@@ -556,4 +595,5 @@ module.exports = {
     allocateUniqueRoomCode,
     syncAllSessionsToDatabase,
     getRoomCodeForWs,
+    forceDisconnectClientBySlot,
 };

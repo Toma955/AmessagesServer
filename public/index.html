@@ -5,14 +5,456 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Amessages Server</title>
     <style>
-        body { font-family: system-ui, sans-serif; margin: 2rem; color: #111; }
-        p { color: #444; max-width: 40rem; line-height: 1.5; }
-        code { background: #f0f0f0; padding: 0.1rem 0.35rem; border-radius: 4px; }
+        :root {
+            --fg: #111;
+            --muted: #555;
+            --border: #ddd;
+            --bg: #fff;
+        }
+        * { box-sizing: border-box; }
+        html, body {
+            margin: 0;
+            min-height: 100%;
+            background: var(--bg);
+            font-family: system-ui, -apple-system, sans-serif;
+            color: var(--fg);
+        }
+        .wrap {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 2rem 1.25rem 3rem;
+        }
+        h1 {
+            font-size: 1.35rem;
+            font-weight: 600;
+            margin: 0 0 0.35rem;
+        }
+        .sub {
+            color: var(--muted);
+            font-size: 0.9rem;
+            margin-bottom: 1.5rem;
+        }
+        .toolbar {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            margin-bottom: 1.25rem;
+        }
+        button {
+            font: inherit;
+            padding: 0.35rem 0.65rem;
+            cursor: pointer;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: #f8f8f8;
+            font-size: 0.8rem;
+        }
+        button:hover { background: #eee; }
+        button.danger { background: #ffebee; border-color: #e57373; }
+        button.danger:hover { background: #ffcdd2; }
+        button.console { background: #e3f2fd; border-color: #64b5f6; }
+        button.copy-c {
+            background: #e8f5e9;
+            border-color: #66bb6a;
+            font-weight: 500;
+        }
+        button.copy-c:hover { background: #c8e6c9; }
+        button.copy-err {
+            background: #fff3e0;
+            border-color: #ffb74d;
+        }
+        button.copy-err:hover { background: #ffe0b2; }
+        .status {
+            font-size: 0.85rem;
+            color: var(--muted);
+        }
+        .status.err { color: #b00020; }
+        section {
+            margin-bottom: 2rem;
+        }
+        h2 {
+            font-size: 1rem;
+            font-weight: 600;
+            margin: 0 0 0.5rem;
+        }
+        .hint {
+            font-size: 0.8rem;
+            color: var(--muted);
+            margin-bottom: 0.5rem;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8rem;
+        }
+        th, td {
+            text-align: left;
+            padding: 0.45rem 0.5rem;
+            border-bottom: 1px solid var(--border);
+            vertical-align: top;
+        }
+        th {
+            font-weight: 600;
+            background: #fafafa;
+        }
+        .pin {
+            font-family: ui-monospace, monospace;
+            letter-spacing: 0.02em;
+        }
+        .empty {
+            color: var(--muted);
+            font-style: italic;
+            padding: 0.75rem 0;
+        }
+        .match {
+            display: inline-block;
+            margin-left: 0.5rem;
+            font-size: 0.75rem;
+            font-weight: 500;
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+        }
+        .match.ok { background: #e8f5e9; color: #1b5e20; }
+        .match.warn { background: #fff3e0; color: #e65100; }
+        .actions { white-space: nowrap; }
+        .console-toolbar {
+            display: inline-flex;
+            gap: 0.35rem;
+            flex-shrink: 0;
+        }
+        .console-panel {
+            margin-top: 0.75rem;
+            padding: 0.75rem;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            border-radius: 8px;
+            font-family: ui-monospace, monospace;
+            font-size: 0.72rem;
+            line-height: 1.45;
+            max-height: 280px;
+            overflow: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .console-panel .line { margin-bottom: 0.25rem; }
+        .console-panel .kind { color: #9cdcfe; }
+        .console-panel .ts { color: #6a9955; }
+        .console-title {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.5rem 0.75rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-bottom: 0.35rem;
+            color: var(--muted);
+        }
+        .console-title .console-title-main {
+            flex: 1 1 12rem;
+            min-width: 0;
+        }
+        .console-title .console-toolbar-sep {
+            color: var(--muted);
+            user-select: none;
+            padding: 0 0.25rem;
+        }
+        #room-consoles-dock {
+            margin-top: 0.75rem;
+        }
+        #room-consoles-dock > .console-wrap-outer {
+            margin-bottom: 1rem;
+        }
     </style>
 </head>
 <body>
-    <h1>Amessages Server</h1>
-    <p>HTTP + WebSocket endpoint. Protokol i API opisani su u <code>README.md</code> u repozitoriju.</p>
-    <p><a href="/health">GET /health</a></p>
+    <div class="wrap">
+        <h1>Amessages Server</h1>
+        <p class="sub">Pregled aktivnih soba, konzola događaja po PIN-u i prekid veze po strani (A = prvi klijent, B = drugi u direct sobi).</p>
+
+        <div class="toolbar">
+            <button type="button" id="refresh">Osvježi</button>
+            <span class="status" id="status"></span>
+            <button type="button" id="copyStatus" title="Kopiraj tekst statusa (npr. grešku učitavanja)">Kopiraj status</button>
+        </div>
+
+        <section>
+            <h2>Aktivne sobe (RAM)</h2>
+            <p class="hint">Strana A/B vrijedi za <strong>direct</strong> (redoslijed spajanja). Konzola ostaje otvorena dok je ne zatvoriš — osvježavanje tablice je neovisno.</p>
+            <div id="rooms-table-mount"></div>
+            <div id="room-consoles-dock"></div>
+        </section>
+
+        <section>
+            <h2>SQLite <span id="db-match"></span></h2>
+            <p class="hint">Zadnji zapisi u bazi — trebaju odgovarati RAM-u nakon svake promjene.</p>
+            <div id="db-table"></div>
+        </section>
+    </div>
+
+    <script>
+        const statusEl = document.getElementById('status');
+        const roomsTableMount = document.getElementById('rooms-table-mount');
+        const roomConsolesDock = document.getElementById('room-consoles-dock');
+        const dbTable = document.getElementById('db-table');
+        const dbMatch = document.getElementById('db-match');
+
+        const LS_KEY = 'amessages_admin_token';
+        function getToken() {
+            return (localStorage.getItem(LS_KEY) || '').trim();
+        }
+
+        function authHeaders() {
+            const t = getToken();
+            if (!t) return {};
+            return { Authorization: 'Bearer ' + t, 'X-Admin-Token': t };
+        }
+
+        function esc(s) {
+            const d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        /** @type {Record<string, EventSource | null>} */
+        const eventSources = {};
+
+        function appendConsoleLine(pin, ts, kind, message) {
+            const pre = document.getElementById('console-log-' + pin);
+            if (!pre) return;
+            const line = document.createElement('div');
+            line.className = 'line';
+            line.innerHTML = '<span class="ts">' + esc(ts) + '</span> <span class="kind">[' + esc(kind) + ']</span> ' + esc(message);
+            pre.appendChild(line);
+            pre.parentElement.scrollTop = pre.parentElement.scrollHeight;
+        }
+
+        function copyTextToClipboard(text, okMsg) {
+            const msg = okMsg || 'Kopirano u međuspremnik.';
+            return (async () => {
+                try {
+                    await navigator.clipboard.writeText(text);
+                    statusEl.textContent = msg;
+                    statusEl.classList.remove('err');
+                } catch {
+                    const ta = document.createElement('textarea');
+                    ta.value = text;
+                    ta.setAttribute('readonly', '');
+                    ta.style.position = 'fixed';
+                    ta.style.left = '-9999px';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    try {
+                        document.execCommand('copy');
+                        statusEl.textContent = msg;
+                        statusEl.classList.remove('err');
+                    } catch {
+                        statusEl.textContent = 'Kopiranje nije uspjelo.';
+                        statusEl.classList.add('err');
+                    }
+                    document.body.removeChild(ta);
+                }
+            })();
+        }
+
+        async function copyConsoleLog(pin) {
+            const pre = document.getElementById('console-log-' + pin);
+            if (!pre) return;
+            const text = 'PIN: ' + pin + '\n\n' + pre.innerText;
+            await copyTextToClipboard(text, 'Konzola kopirana u međuspremnik.');
+        }
+
+        function copyConsoleErrorsOnly(pin) {
+            const pre = document.getElementById('console-log-' + pin);
+            if (!pre) return;
+            const lines = pre.innerText.split(/\n/).filter((line) => {
+                const L = line.toLowerCase();
+                return /greška|error|failed|http\s+\d|unauthorized|odbijen|⚠/.test(L);
+            });
+            const text = lines.length ? lines.join('\n') : '(nema prepoznatih redaka greške u konzoli)';
+            copyTextToClipboard('PIN: ' + pin + '\n\n' + text, 'Greške iz konzole kopirane.');
+        }
+
+        function closeConsole(pin) {
+            if (eventSources[pin]) {
+                eventSources[pin].close();
+                eventSources[pin] = null;
+            }
+            const wrap = document.getElementById('console-wrap-' + pin);
+            if (wrap) wrap.remove();
+        }
+
+        function openConsole(pin) {
+            const existing = document.getElementById('console-wrap-' + pin);
+            if (existing) {
+                closeConsole(pin);
+                return;
+            }
+
+            const wrap = document.createElement('div');
+            wrap.id = 'console-wrap-' + pin;
+            wrap.className = 'console-wrap-outer';
+            wrap.innerHTML = '<div class="console-title"><span class="console-title-main">Konzola sobe <span class="pin">' + esc(pin) + '</span></span><span class="console-toolbar-sep" aria-hidden="true"> · </span><span class="console-toolbar"><button type="button" class="copy-c" title="Cijeli dnevnik konzole">Kopiraj sve</button><button type="button" class="copy-err" title="Samo retke koji izgledaju kao greške">Kopiraj greške</button><button type="button" class="close-c">Zatvori</button></span></div><div class="console-panel" id="console-panel-' + pin + '"><pre id="console-log-' + pin + '" style="margin:0;white-space:pre-wrap;"></pre></div>';
+            roomConsolesDock.appendChild(wrap);
+            wrap.querySelector('.close-c').addEventListener('click', () => closeConsole(pin));
+            wrap.querySelector('.copy-c').addEventListener('click', () => copyConsoleLog(pin));
+            wrap.querySelector('.copy-err').addEventListener('click', () => copyConsoleErrorsOnly(pin));
+
+            const t = getToken();
+            const streamUrl = '/api/rooms/' + encodeURIComponent(pin) + '/events/stream'
+                + (t ? '?admin_token=' + encodeURIComponent(t) : '');
+
+            try {
+                const es = new EventSource(streamUrl);
+                eventSources[pin] = es;
+                es.onmessage = (ev) => {
+                    try {
+                        const d = JSON.parse(ev.data);
+                        appendConsoleLine(pin, d.ts, d.kind, d.message);
+                    } catch (e) { /* */ }
+                };
+                es.onerror = () => {
+                    appendConsoleLine(pin, new Date().toISOString(), 'system', 'SSE greška ili zatvorena veza — pokušaj ponovno otvoriti konzolu.');
+                };
+            } catch (e) {
+                appendConsoleLine(pin, new Date().toISOString(), 'system', 'Ne mogu otvoriti EventSource: ' + (e.message || e));
+            }
+        }
+
+        async function killSide(pin, slot) {
+            const label = slot === 'first' ? 'A' : 'B';
+            if (!confirm('Prekinuti vezu strane ' + label + ' za PIN ' + pin + '?')) return;
+            try {
+                const res = await fetch('/api/rooms/' + encodeURIComponent(pin) + '/disconnect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                    body: JSON.stringify({ slot }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    alert('Greška: ' + (data.error || res.status));
+                    return;
+                }
+                statusEl.textContent = 'Prekinuto: strana ' + label;
+                load();
+            } catch (e) {
+                alert(e.message || String(e));
+            }
+        }
+
+        function ramTableHtml(rooms) {
+            if (!rooms.length) {
+                return '<p class="empty">Nema aktivnih soba.</p>';
+            }
+            const th = '<tr><th>PIN</th><th>Tip</th><th>Klijenti</th><th>Priključci (RAM)</th><th>PIN zaključan</th><th>Hibernacija</th><th>Otvaranje</th><th>Akcije</th></tr>';
+            const tr = rooms.map((r) => {
+                const direct = r.type === 'direct';
+                const n = r.clientCount | 0;
+                const peers = Array.isArray(r.peers) ? r.peers : [];
+                const peerTxt = peers.length
+                    ? peers.map((p) => {
+                        const ip = p.remoteAddress != null ? String(p.remoteAddress) : '—';
+                        const port = p.remotePort != null ? String(p.remotePort) : '—';
+                        const id = p.wsId != null ? 'ws' + p.wsId : '?';
+                        return id + ' ' + ip + ':' + port;
+                    }).join(' · ')
+                    : '—';
+                let btns = '<button type="button" class="console" data-act="console" data-pin="' + esc(r.pin) + '">Konzola</button> ';
+                if (direct && n >= 1) {
+                    btns += '<button type="button" class="danger" data-act="kill-first" data-pin="' + esc(r.pin) + '">Prekini A</button> ';
+                }
+                if (direct && n >= 2) {
+                    btns += '<button type="button" class="danger" data-act="kill-second" data-pin="' + esc(r.pin) + '">Prekini B</button>';
+                }
+                return '<tr data-pin-row="' + esc(r.pin) + '"><td class="pin">' + esc(r.pin) + '</td><td>' + esc(r.type) + '</td><td>' + esc(String(n)) + '</td><td class="pin">' + esc(peerTxt) + '</td><td>' + esc(r.pinLocked ? 'da' : 'ne') + '</td><td>' + esc(r.hibernated ? 'da' : 'ne') + '</td><td>' + esc(r.createdAt) + '</td><td class="actions">' + btns + '</td></tr>';
+            }).join('');
+            return '<table><thead>' + th + '</thead><tbody>' + tr + '</tbody></table>';
+        }
+
+        function normalizeDbRow(r) {
+            return {
+                pin: r.pin,
+                type: r.type,
+                clientCount: r.clientCount,
+                createdAt: r.createdAt,
+                updatedAt: r.updatedAt || '—',
+            };
+        }
+
+        function normalizeRamRow(r) {
+            return {
+                pin: r.pin,
+                type: r.type,
+                clientCount: r.clientCount,
+                peers: Array.isArray(r.peers) ? r.peers : [],
+                pinLocked: !!r.pinLocked,
+                hibernated: !!r.hibernated,
+                createdAt: r.createdAt,
+            };
+        }
+
+        function tableHtmlDb(rows) {
+            if (!rows.length) {
+                return '<p class="empty">Nema zapisa u bazi.</p>';
+            }
+            const th = '<tr><th>PIN</th><th>Tip</th><th>Klijenti</th><th>Otvaranje</th><th>Zadnji zapis</th></tr>';
+            const tr = rows.map((r) => '<tr><td class="pin">' + esc(r.pin) + '</td><td>' + esc(r.type) + '</td><td>' + esc(String(r.clientCount)) + '</td><td>' + esc(r.createdAt) + '</td><td>' + esc(r.updatedAt) + '</td></tr>').join('');
+            return '<table><thead>' + th + '</thead><tbody>' + tr + '</tbody></table>';
+        }
+
+        async function load() {
+            statusEl.textContent = 'Učitavanje…';
+            statusEl.classList.remove('err');
+            try {
+                const res = await fetch('/api/rooms', { cache: 'no-store' });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+                const rooms = (data.rooms || []).map(normalizeRamRow);
+                const database = (data.database || []).map(normalizeDbRow);
+
+                roomsTableMount.innerHTML = ramTableHtml(rooms);
+                roomsTableMount.querySelectorAll('button[data-act]').forEach((btn) => {
+                    btn.addEventListener('click', () => {
+                        const pin = btn.getAttribute('data-pin');
+                        const act = btn.getAttribute('data-act');
+                        if (act === 'console') openConsole(pin);
+                        if (act === 'kill-first') killSide(pin, 'first');
+                        if (act === 'kill-second') killSide(pin, 'second');
+                    });
+                });
+
+                dbTable.innerHTML = tableHtmlDb(database);
+
+                const pinsRam = new Set(rooms.map((r) => r.pin));
+                const pinsDb = new Set(database.map((r) => r.pin));
+                let match = pinsRam.size === pinsDb.size;
+                if (match) {
+                    for (const p of pinsRam) {
+                        if (!pinsDb.has(p)) { match = false; break; }
+                    }
+                }
+                dbMatch.innerHTML = match
+                    ? '<span class="match ok">skladno s RAM-om</span>'
+                    : '<span class="match warn">razlika u odnosu na RAM</span>';
+
+                statusEl.textContent = 'Ažurirano: ' + new Date().toLocaleString('hr-HR');
+            } catch (e) {
+                statusEl.textContent = 'Greška: ' + (e.message || String(e));
+                statusEl.classList.add('err');
+            }
+        }
+
+        document.getElementById('refresh').addEventListener('click', load);
+        document.getElementById('copyStatus').addEventListener('click', () => {
+            const t = statusEl.textContent || '';
+            if (!t.trim()) {
+                statusEl.textContent = 'Nema teksta statusa za kopirati.';
+                return;
+            }
+            copyTextToClipboard(t, 'Status kopiran.');
+        });
+        load();
+        setInterval(load, 5000);
+    </script>
 </body>
 </html>

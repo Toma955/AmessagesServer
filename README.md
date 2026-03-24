@@ -14,6 +14,7 @@ Node.js server za sobe preko **WebSocket** + **libsodium crypto_box**, s **SQLit
 | `DATABASE_PATH` | Put do SQLite datoteke ili `:memory:` za testove |
 | `SYNC_DB_INTERVAL_MS` | Periodički sync RAM → SQLite (ms); `0` = isključeno |
 | `NODE_ENV` | U `test` načinu isključen je periodički sync i signal handleri za shutdown |
+| `ADMIN_TOKEN` | Ako je postavljen, admin API (dnevnik sobe, prekid strane, SSE) zahtijeva `Authorization: Bearer …`, zaglavlje `X-Admin-Token` ili query `admin_token` na SSE URL-u |
 
 WebSocket URL: `ws://<host>:<PORT>/` (isti server kao HTTP; nema posebnog patha).
 
@@ -106,7 +107,17 @@ Provjera je li kod zauzet (aktivna sesija u RAM-u, zapis u bazi ili kratka rezer
 
 **Napomena:** Endpoint nema autentikacije u kodu — u produkciji ograniči pristup (npr. samo interna mreža ili reverse proxy).
 
-`GET /` vraća kratku statičku stranicu (bez pregleda soba ili kontrolnih panela).
+### Admin: dnevnik po sobi i prekid veze (web na `GET /`)
+
+Na početnoj stranici (`/`) tablica aktivnih soba ima po redu: **Konzola** (otvara **SSE** tok događaja samo za taj PIN; gumb **Kopiraj konzolu** kopira cijeli dnevnik u međuspremnik), stupac **Priključci (RAM)** (`ws` id + IP:port po peeru), **Prekini A** / **Prekini B** (samo **direct**: prvi spojeni = A, drugi = B; nasilno zatvara taj WebSocket). Ako je postavljen `ADMIN_TOKEN`, u konzoli preglednika jednom postavi `localStorage.setItem('amessages_admin_token', '<token>')` (ili koristi `?admin_token=` na stream URL-u).
+
+- **`GET /api/rooms/:pin/events`** — JSON `{ "pin", "events": [ { "ts", "kind", "message" } ] }` (povijest u memoriji servera).
+- **`GET /api/rooms/:pin/events/stream`** — **Server-Sent Events**; prvo se pošalje cijela povijest, zatim novi redovi uživo.
+- **`POST /api/rooms/:pin/disconnect`** — tijelo `{ "slot": "first" | "second" }` (isto značenje kao A/B).
+
+Ako je postavljen `ADMIN_TOKEN`, ovi endpointi zahtijevaju autentikaciju (Bearer / `X-Admin-Token`; za EventSource u pregledniku možeš dodati `?admin_token=` na stream URL — vidljivo u URL-u, pa u produkciji radije proxy ili isti origin bez tokena na javnoj mreži).
+
+Događaji uključuju: otvaranje sesije, join strane A/B, relay `signal`/`msg`, `ping_self` / `peer_ping` / `peer_pong`, `e2e_ready`, odlazak, `close_session`, admin prekid.
 
 ---
 
@@ -406,12 +417,12 @@ HTTP server **ne** postavlja CORS zaglavlja. Ako frontend i API nisu isti origin
 |----------|----------|
 | Ulaz (HTTP + WS bootstrap) | `src/server.js` |
 | HTTP pipeline (lanac ruta) | `src/http/HttpPipeline.js`, `src/http/buildHttpListener.js` |
-| Pojedinačne HTTP rute | `src/http/routes/*.js` (npr. `HealthRoute`, `RoomCodeCheckGetRoute`, `RoomsListRoute`, `IndexHtmlRoute`) |
+| Pojedinačne HTTP rute | `src/http/routes/*.js` (npr. `HealthRoute`, `RoomCodeCheckGetRoute`, `RoomsListRoute`, `RoomAdminApiRoute`, `IndexHtmlRoute`) |
 | HTTP pomoć | `src/http/httpUtils.js` |
 | WebSocket životni ciklus veza | `src/ws/WebSocketManager.js` |
 | Graceful shutdown | `src/bootstrap/shutdown.js` |
 | Konstante soba (rezervacija PIN-a) | `src/core/roomConstants.js` |
-| Rezervirano (no-op hookovi za događaje) | `src/core/roomDiagnostics.js` |
+| Dnevnik po sobi (za admin konzolu) | `src/core/roomDiagnostics.js` |
 | WS routing (box / inner.t) | `src/core/messageRouter.js` |
 | Box kripto | `src/crypto/boxChannel.js`, `src/crypto/serverIdentity.js` |
 | Sobe | `src/core/roomManager.js` |
