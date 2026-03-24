@@ -7,7 +7,8 @@ if (!process.env.PORT) {
     process.env.PORT = '0';
 }
 
-const { server, listeningPromise } = require('../src/server');
+const { server, wss, listeningPromise } = require('../src/server');
+const { closeSessionDb } = require('../src/db/sessionStore');
 
 function testPort() {
     const addr = server.address();
@@ -144,11 +145,46 @@ beforeAll(async () => {
     HTTP_BASE = `http://127.0.0.1:${p}`;
 });
 
-afterAll((done) => {
-    if (server && server.close) {
-        server.close(() => done());
-    } else {
-        done();
+afterAll(async () => {
+    /** Prvo prekini WS veze, pa wss, pa HTTP — inače `server.close()` može čekati zauvijek ako je test pukao prije `ws.close()`. */
+    try {
+        if (wss && wss.clients) {
+            for (const c of wss.clients) {
+                try {
+                    c.terminate();
+                } catch {
+                    /* ignore */
+                }
+            }
+        }
+    } catch {
+        /* ignore */
+    }
+    await new Promise((resolve) => {
+        if (wss && typeof wss.close === 'function') {
+            wss.close(() => {
+                if (server && server.close) {
+                    if (typeof server.closeAllConnections === 'function') {
+                        server.closeAllConnections();
+                    }
+                    server.close(() => resolve());
+                } else {
+                    resolve();
+                }
+            });
+        } else if (server && server.close) {
+            if (typeof server.closeAllConnections === 'function') {
+                server.closeAllConnections();
+            }
+            server.close(() => resolve());
+        } else {
+            resolve();
+        }
+    });
+    try {
+        closeSessionDb();
+    } catch {
+        /* ignore */
     }
 });
 
@@ -320,13 +356,15 @@ test('INSIDE: inside_query + relay prije inside_confirm + inside_confirm', async
     const sigBefore = await signalEcho;
     expect(sigBefore.data.x).toBe(1);
 
+    /** Oba odgovora mogu stići u istom ticku — handler za `inside_confirmed` mora biti registriran prije slanja. */
+    const ackPromise = waitForInnerType(ws, 'inside_confirm_ack', ctx);
+    const confirmedPromise = waitForInnerType(ws, 'inside_confirmed', ctx);
     ws.send(encryptClientToServer({
         t: 'inside_confirm',
         code,
         message: 'INSIDE test',
     }, ctx.serverPk, ctx.clientSk));
-    await waitForInnerType(ws, 'inside_confirm_ack', ctx);
-    const ic = await waitForInnerType(ws, 'inside_confirmed', ctx);
+    const [, ic] = await Promise.all([ackPromise, confirmedPromise]);
     expect(ic.code).toBe(code);
 
     ws.send(encryptClientToServer({ t: 'inside_hybrid', code }, ctx.serverPk, ctx.clientSk));
