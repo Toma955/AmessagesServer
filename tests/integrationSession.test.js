@@ -1,9 +1,21 @@
 const http = require('http');
 const WebSocket = require('ws');
 const sodium = require('libsodium-wrappers');
+
+/** Slušaj na slobodnom portu (0) da testovi ne padnu ako je 3000 zauzet lokalno. */
+if (!process.env.PORT) {
+    process.env.PORT = '0';
+}
+
 const { server, listeningPromise } = require('../src/server');
 
-const WS_URL = 'ws://localhost:3000';
+function testPort() {
+    const addr = server.address();
+    return typeof addr === 'object' && addr && addr.port != null ? addr.port : 3000;
+}
+
+let WS_URL = 'ws://localhost:3000';
+let HTTP_BASE = 'http://127.0.0.1:3000';
 
 jest.setTimeout(20000);
 
@@ -127,6 +139,9 @@ function httpRequestJson(options, bodyStr) {
 beforeAll(async () => {
     await sodium.ready;
     await listeningPromise;
+    const p = testPort();
+    WS_URL = `ws://localhost:${p}`;
+    HTTP_BASE = `http://127.0.0.1:${p}`;
 });
 
 afterAll((done) => {
@@ -422,7 +437,7 @@ test('e2e_ready: oba klijenta → hibernacija; ping_self budi', async () => {
     expect(ackB.hibernated).toBe(true);
 
     const roomsData = await new Promise((resolve, reject) => {
-        http.get('http://127.0.0.1:3000/api/rooms', (res) => {
+        http.get(`${HTTP_BASE}/api/rooms`, (res) => {
             let buf = '';
             res.on('data', (c) => {
                 buf += c;
@@ -444,7 +459,7 @@ test('e2e_ready: oba klijenta → hibernacija; ping_self budi', async () => {
     await waitForInnerType(wsA, 'ping_self_ack', ctxA);
 
     const roomsAfterWake = await new Promise((resolve, reject) => {
-        http.get('http://127.0.0.1:3000/api/rooms', (res) => {
+        http.get(`${HTTP_BASE}/api/rooms`, (res) => {
             let buf = '';
             res.on('data', (c) => {
                 buf += c;
@@ -468,7 +483,7 @@ test('e2e_ready: oba klijenta → hibernacija; ping_self budi', async () => {
 test('GET /api/room-code/check validates client candidate code', async () => {
     const freeCode = 'ZZzzZZzzZZzzZZzz'; // unlikely occupied in empty server
     const data = await new Promise((resolve, reject) => {
-        http.get(`http://127.0.0.1:3000/api/room-code/check?code=${encodeURIComponent(freeCode)}`, (res) => {
+        http.get(`${HTTP_BASE}/api/room-code/check?code=${encodeURIComponent(freeCode)}`, (res) => {
             let buf = '';
             res.on('data', (c) => {
                 buf += c;
@@ -495,7 +510,7 @@ test('GET /api/room-code/check validates client candidate code', async () => {
 
 test('GET /api/room-code returns unique 16-char code', async () => {
     const data = await new Promise((resolve, reject) => {
-        http.get('http://127.0.0.1:3000/api/room-code', (res) => {
+        http.get(`${HTTP_BASE}/api/room-code`, (res) => {
             let buf = '';
             res.on('data', (c) => {
                 buf += c;
@@ -517,7 +532,7 @@ test('GET /api/room-code returns unique 16-char code', async () => {
 
 test('GET /api/rooms returns rooms and database arrays', async () => {
     const data = await new Promise((resolve, reject) => {
-        http.get('http://127.0.0.1:3000/api/rooms', (res) => {
+        http.get(`${HTTP_BASE}/api/rooms`, (res) => {
             let buf = '';
             res.on('data', (c) => {
                 buf += c;
@@ -635,7 +650,7 @@ test('POST /api/room-code/check vraća istu strukturu kao GET', async () => {
     const { status, body } = await httpRequestJson(
         {
             hostname: '127.0.0.1',
-            port: 3000,
+            port: testPort(),
             path: '/api/room-code/check',
             method: 'POST',
             headers: { 'Content-Type': 'application/json; charset=utf-8' },
