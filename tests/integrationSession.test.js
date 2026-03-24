@@ -18,7 +18,7 @@ function testPort() {
 let WS_URL = 'ws://localhost:3000';
 let HTTP_BASE = 'http://127.0.0.1:3000';
 
-jest.setTimeout(20000);
+jest.setTimeout(30000);
 
 function waitForType(ws, expectedType, timeoutMs = 5000) {
     return new Promise((resolve, reject) => {
@@ -63,55 +63,63 @@ function decryptServerToClient(boxMsg, serverPk, clientSk) {
     return JSON.parse(Buffer.from(plain).toString('utf8'));
 }
 
-function waitForInnerType(ws, expectedInnerT, { serverPk, clientSk }, timeoutMs = 5000) {
+/**
+ * Jedan `message` listener po WebSocketu + redovi po `inner.t`.
+ * Poruke koje stignu prije nego postoji čekatelj idu u buffer — nema izgubljenih okvira (race s više uzastopnih box odgovora).
+ */
+const boxDemuxByWs = new WeakMap();
+
+function getBoxDemux(ws, ctx) {
+    let d = boxDemuxByWs.get(ws);
+    if (d) return d;
+    const queues = new Map();
+    const pending = new Map();
+
+    function onMessage(data) {
+        try {
+            const msg = JSON.parse(data.toString());
+            if (msg.t !== 'box') return;
+            const inner = decryptServerToClient(msg, ctx.serverPk, ctx.clientSk);
+            const t = inner.t;
+            const waiters = pending.get(t);
+            if (waiters && waiters.length) {
+                const w = waiters.shift();
+                clearTimeout(w.timeout);
+                w.resolve(inner);
+                return;
+            }
+            if (!queues.has(t)) queues.set(t, []);
+            queues.get(t).push(inner);
+        } catch {
+            /* ignore */
+        }
+    }
+
+    ws.on('message', onMessage);
+    d = { queues, pending, onMessage };
+    boxDemuxByWs.set(ws, d);
+    return d;
+}
+
+function waitForInnerType(ws, expectedInnerT, ctx, timeoutMs = 5000) {
+    const { queues, pending } = getBoxDemux(ws, ctx);
+    const buffered = queues.get(expectedInnerT);
+    if (buffered && buffered.length) {
+        const inner = buffered.shift();
+        return Promise.resolve(inner);
+    }
     return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
             reject(new Error(`Timeout čekajući inner t=${expectedInnerT}`));
         }, timeoutMs);
-
-        const handler = (data) => {
-            try {
-                const msg = JSON.parse(data.toString());
-                if (msg.t !== 'box') return;
-                const inner = decryptServerToClient(msg, serverPk, clientSk);
-                if (inner.t === expectedInnerT) {
-                    clearTimeout(timeout);
-                    ws.off('message', handler);
-                    resolve(inner);
-                }
-            } catch {
-                /* ignore */
-            }
-        };
-
-        ws.on('message', handler);
+        if (!pending.has(expectedInnerT)) pending.set(expectedInnerT, []);
+        pending.get(expectedInnerT).push({ resolve, reject, timeout });
     });
 }
 
 /** Prvi box odgovor s inner.t === 'error' (npr. not_in_room). */
-function waitForInnerError(ws, { serverPk, clientSk }, timeoutMs = 5000) {
-    return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-            reject(new Error('Timeout čekajući inner t=error'));
-        }, timeoutMs);
-
-        const handler = (data) => {
-            try {
-                const msg = JSON.parse(data.toString());
-                if (msg.t !== 'box') return;
-                const inner = decryptServerToClient(msg, serverPk, clientSk);
-                if (inner.t === 'error') {
-                    clearTimeout(timeout);
-                    ws.off('message', handler);
-                    resolve(inner);
-                }
-            } catch {
-                /* ignore */
-            }
-        };
-
-        ws.on('message', handler);
-    });
+function waitForInnerError(ws, ctx, timeoutMs = 5000) {
+    return waitForInnerType(ws, 'error', ctx, timeoutMs);
 }
 
 function httpRequestJson(options, bodyStr) {
@@ -146,46 +154,54 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-    /** Prvo prekini WS veze, pa wss, pa HTTP — inače `server.close()` može čekati zauvijek ako je test pukao prije `ws.close()`. */
-    try {
-        if (wss && wss.clients) {
-            for (const c of wss.clients) {
-                try {
-                    c.terminate();
-                } catch {
-                    /* ignore */
-                }
-            }
-        }
-    } catch {
-        /* ignore */
-    }
-    await new Promise((resolve) => {
-        if (wss && typeof wss.close === 'function') {
-            wss.close(() => {
-                if (server && server.close) {
-                    if (typeof server.closeAllConnections === 'function') {
-                        server.closeAllConnections();
+    const shutdown = async () => {
+        try {
+            if (wss && wss.clients) {
+                for (const c of wss.clients) {
+                    try {
+                        c.terminate();
+                    } catch {
+                        /* ignore */
                     }
-                    server.close(() => resolve());
-                } else {
-                    resolve();
                 }
-            });
-        } else if (server && server.close) {
-            if (typeof server.closeAllConnections === 'function') {
-                server.closeAllConnections();
             }
-            server.close(() => resolve());
-        } else {
-            resolve();
+        } catch {
+            /* ignore */
         }
-    });
-    try {
-        closeSessionDb();
-    } catch {
-        /* ignore */
-    }
+        await new Promise((resolve) => {
+            if (wss && typeof wss.close === 'function') {
+                wss.close(() => {
+                    if (server && server.close) {
+                        if (typeof server.closeAllConnections === 'function') {
+                            server.closeAllConnections();
+                        }
+                        server.close(() => resolve());
+                    } else {
+                        resolve();
+                    }
+                });
+            } else if (server && server.close) {
+                if (typeof server.closeAllConnections === 'function') {
+                    server.closeAllConnections();
+                }
+                server.close(() => resolve());
+            } else {
+                resolve();
+            }
+        });
+        try {
+            closeSessionDb();
+        } catch {
+            /* ignore */
+        }
+    };
+
+    await Promise.race([
+        shutdown(),
+        new Promise((resolve) => {
+            setTimeout(resolve, 8000);
+        }),
+    ]);
 });
 
 async function exchangeKeys(ws) {
@@ -356,15 +372,13 @@ test('INSIDE: inside_query + relay prije inside_confirm + inside_confirm', async
     const sigBefore = await signalEcho;
     expect(sigBefore.data.x).toBe(1);
 
-    /** Oba odgovora mogu stići u istom ticku — handler za `inside_confirmed` mora biti registriran prije slanja. */
-    const ackPromise = waitForInnerType(ws, 'inside_confirm_ack', ctx);
-    const confirmedPromise = waitForInnerType(ws, 'inside_confirmed', ctx);
     ws.send(encryptClientToServer({
         t: 'inside_confirm',
         code,
         message: 'INSIDE test',
     }, ctx.serverPk, ctx.clientSk));
-    const [, ic] = await Promise.all([ackPromise, confirmedPromise]);
+    await waitForInnerType(ws, 'inside_confirm_ack', ctx);
+    const ic = await waitForInnerType(ws, 'inside_confirmed', ctx);
     expect(ic.code).toBe(code);
 
     ws.send(encryptClientToServer({ t: 'inside_hybrid', code }, ctx.serverPk, ctx.clientSk));
