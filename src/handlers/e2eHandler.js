@@ -4,6 +4,7 @@ const { pushRoomEvent } = require('../core/roomDiagnostics');
 const { persistSession } = require('../db/sessionStore');
 const { sendSecure } = require('../crypto/boxChannel');
 const { logInfo } = require('../utils/logger');
+const { effectivePeerCount } = require('../utils/effectivePeerCount');
 
 /**
  * Oba klijenta u direct sobi javljaju da su prešli na izravni E2E kanal —
@@ -29,12 +30,45 @@ function handleE2eReady(ws, msg) {
         });
     }
 
-    if (session.type !== 'direct' || session.clients.size !== 2) {
+    if (session.type !== 'direct' || effectivePeerCount(session) !== 2) {
         return sendSecure(ws, {
             t: 'error',
             reason: 'e2e_ready_invalid',
             message: 'E2E standby is only for a connected direct room with two peers',
         });
+    }
+
+    const insideSingleSocket = !!(session.insideProtocol && session.clients.size === 1);
+
+    if (insideSingleSocket) {
+        session.e2eReadyCallCount = (session.e2eReadyCallCount || 0) + 1;
+        logInfo(`[e2e_ready] pin=${code} | INSIDE jedan WS | poziv=${session.e2eReadyCallCount}/2`);
+
+        if (session.e2eReadyCallCount >= 2) {
+            persistSession(session, true);
+            session.hibernated = true;
+            session.e2eReadyFrom.clear();
+            logInfo(`[e2e_ready] HIBERNACIJA UKLJUČENA | pin=${code} | INSIDE dva e2e_ready`);
+            pushRoomEvent(code, 'system', 'e2e_ready: oba logička peer-a (INSIDE) na E2E standby — hibernacija.');
+            for (const client of session.clients) {
+                if (client.readyState === client.OPEN) {
+                    sendSecure(client, {
+                        t: 'e2e_ready_ack',
+                        code,
+                        hibernated: true,
+                    });
+                }
+            }
+        } else {
+            pushRoomEvent(code, 'system', 'e2e_ready: jedan od dva logička peer-a (INSIDE) na standby.');
+            sendSecure(ws, {
+                t: 'e2e_ready_ack',
+                code,
+                hibernated: false,
+                pendingPeer: true,
+            });
+        }
+        return;
     }
 
     session.e2eReadyFrom.add(ws);

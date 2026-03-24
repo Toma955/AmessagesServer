@@ -2,6 +2,7 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 const { logError } = require('../utils/logger');
+const { effectivePeerCount } = require('../utils/effectivePeerCount');
 
 let db = null;
 
@@ -69,7 +70,7 @@ function persistSession(session, force = false) {
             type: session.type,
             created_at: createdIso,
             renew_count: session.renewCount,
-            client_count: session.clients.size,
+            client_count: effectivePeerCount(session),
             updated_at: updatedAt,
         });
     } catch (err) {

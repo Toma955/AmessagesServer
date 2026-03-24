@@ -271,6 +271,55 @@ test('direct: first client joined = waiting_peer, second = connected + session_r
     wsB.close();
 });
 
+test('INSIDE: inside_query + relay prije inside_confirm + inside_confirm', async () => {
+    const code = '1234567890123456';
+    const ws = new WebSocket(WS_URL);
+    await new Promise((resolve, reject) => {
+        ws.on('open', resolve);
+        setTimeout(() => reject(new Error('Timeout spajanja')), 5000);
+    });
+
+    const ctx = await exchangeKeys(ws);
+
+    ws.send(encryptClientToServer({ t: 'join', code, mode: 'direct' }, ctx.serverPk, ctx.clientSk));
+    const joined1 = await waitForInnerType(ws, 'joined', ctx);
+    expect(joined1.peersInRoom).toBe(1);
+
+    const joined2Promise = waitForInnerType(ws, 'joined', ctx);
+    const readyPromise = waitForInnerType(ws, 'session_ready', ctx);
+    const queryPromise = waitForInnerType(ws, 'inside_query', ctx);
+    ws.send(encryptClientToServer({ t: 'join', code, mode: 'direct' }, ctx.serverPk, ctx.clientSk));
+    await joined2Promise;
+    const sr = await readyPromise;
+    expect(sr.insideProtocol).toBe(true);
+    expect(sr.insideQuery).toBe(true);
+    await queryPromise;
+
+    const signalEcho = waitForInnerType(ws, 'signal', ctx);
+    ws.send(encryptClientToServer({
+        t: 'signal',
+        code,
+        from: 'A',
+        data: { x: 1 },
+    }, ctx.serverPk, ctx.clientSk));
+    const sigBefore = await signalEcho;
+    expect(sigBefore.data.x).toBe(1);
+
+    ws.send(encryptClientToServer({
+        t: 'inside_confirm',
+        code,
+        message: 'INSIDE test',
+    }, ctx.serverPk, ctx.clientSk));
+    await waitForInnerType(ws, 'inside_confirm_ack', ctx);
+    const ic = await waitForInnerType(ws, 'inside_confirmed', ctx);
+    expect(ic.code).toBe(code);
+
+    ws.send(encryptClientToServer({ t: 'inside_hybrid', code }, ctx.serverPk, ctx.clientSk));
+    await waitForInnerType(ws, 'inside_hybrid_ack', ctx);
+
+    ws.close();
+});
+
 test('security ping_self + peer_ping / peer_pong relay', async () => {
     const code = 'SecPing1234567!@';
     const wsA = new WebSocket(WS_URL);

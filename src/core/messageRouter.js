@@ -7,6 +7,7 @@ const { handleMessage } = require('../handlers/messageHandler');
 const { handleCloseSession } = require('../handlers/closeSessionHandler');
 const { handlePingSelf, handlePeerPing, handlePeerPong } = require('../handlers/securityPingHandler');
 const { handleE2eReady } = require('../handlers/e2eHandler');
+const { handleInsideConfirm, handleInsideHybrid } = require('../handlers/insideConfirmHandler');
 const { hasClientKey } = require('./clientKeys');
 const { decryptFromClient, trySendSecure } = require('../crypto/boxChannel');
 const { logError, logInfo } = require('../utils/logger');
@@ -113,6 +114,12 @@ function routeMessage(ws, raw) {
 
         case 'e2e_ready':
             return handleE2eReady(ws, inner);
+
+        case 'inside_confirm':
+            return handleInsideConfirm(ws, inner);
+
+        case 'inside_hybrid':
+            return handleInsideHybrid(ws, inner);
 
         default:
             trySendSecure(ws, { t: 'error', reason: 'unknown_type' });

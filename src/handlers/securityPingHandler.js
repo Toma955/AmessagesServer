@@ -1,6 +1,7 @@
 const { isValidCode } = require('../utils/validateCode');
 const { sendSecure } = require('../crypto/boxChannel');
 const { getSessionForClientInRoom, broadcastToRoom, wakeSessionByCode } = require('../core/roomManager');
+const { effectivePeerCount } = require('../utils/effectivePeerCount');
 const { pushRoomEvent } = require('../core/roomDiagnostics');
 const { logInfo } = require('../utils/logger');
 
@@ -30,7 +31,7 @@ function handlePingSelf(ws, msg) {
 
     wakeSessionByCode(code);
 
-    const peersInRoom = session.clients.size;
+    const peersInRoom = effectivePeerCount(session);
     let roomState;
     if (session.type === 'direct') {
         roomState = peersInRoom === 1 ? 'waiting_peer' : 'connected';
@@ -41,14 +42,20 @@ function handlePingSelf(ws, msg) {
     logInfo(`[ping_self] pin=${code} | peers=${peersInRoom} | roomState=${roomState}`);
     pushRoomEvent(code, 'traffic', `ping_self: provjera sobe (${peersInRoom} peerova, ${roomState}).`);
 
-    sendSecure(ws, {
+    const ack = {
         t: 'ping_self_ack',
         category: 'ping_self',
         code,
         roomType: session.type,
         roomState,
         peersInRoom,
-    });
+    };
+    if (session.insideProtocol) {
+        ack.insideProtocol = true;
+        ack.insideConfirmed = !!session.insideConfirmed;
+        ack.insideHybridMode = !!session.insideHybridMode;
+    }
+    sendSecure(ws, ack);
 }
 
 /**
@@ -75,7 +82,7 @@ function handlePeerPing(ws, msg) {
         });
     }
 
-    if (session.clients.size < 2) {
+    if (effectivePeerCount(session) < 2) {
         return sendSecure(ws, {
             t: 'error',
             reason: 'peer_not_ready',
@@ -118,7 +125,7 @@ function handlePeerPong(ws, msg) {
         });
     }
 
-    if (session.clients.size < 2) {
+    if (effectivePeerCount(session) < 2) {
         return sendSecure(ws, {
             t: 'error',
             reason: 'peer_not_ready',

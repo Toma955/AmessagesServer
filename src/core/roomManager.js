@@ -5,6 +5,7 @@ const { randomRoomCode16 } = require('../utils/generateRoomCode');
 const { sendSecure } = require('../crypto/boxChannel');
 const { RESERVE_MS } = require('./roomConstants');
 const { pushRoomEvent, clearRoomDiagnostics } = require('./roomDiagnostics');
+const { effectivePeerCount } = require('../utils/effectivePeerCount');
 
 /**
  * Uparivanje u sobu isključivo po PIN-u (string koda). IP, port i X-Forwarded-For
@@ -78,6 +79,14 @@ function createSession(code, mode) {
         directPinLocked: false,
         /** tko je javio E2E spreman (WebSocket); kad su oba u direct → hibernacija. */
         e2eReadyFrom: new Set(),
+        /** INSIDE: drugi join istim PIN-om na istoj WebSocket vezi (isti uređaj / isti chat). */
+        insideProtocol: false,
+        /** INSIDE: klijent poslao inside_confirm. */
+        insideConfirmed: false,
+        /** INSIDE: klijent poslao inside_hybrid (hibridni mod uz relay). */
+        insideHybridMode: false,
+        /** INSIDE + jedan WS: dva uzastopna e2e_ready prije hibernacije. */
+        e2eReadyCallCount: 0,
         /** manje DB upisa dok klijenti koriste isključivo E2E kanal */
         hibernated: false,
     };
@@ -95,6 +104,7 @@ function wakeSessionByCode(code) {
     if (session.e2eReadyFrom) {
         session.e2eReadyFrom.clear();
     }
+    session.e2eReadyCallCount = 0;
     logInfo(`[room] WAKE (kraj hibernacije) | pin=${code}`);
     pushRoomEvent(code, 'system', 'Soba izlazi iz hibernacije (nova aktivnost).');
     persistSession(session, true);
@@ -106,33 +116,76 @@ function joinRoom(ws, code, mode = 'direct') {
     if (existingCode === code) {
         const sess = sessions.get(code);
         if (sess && sess.clients.has(ws)) {
-            const peersInRoom = sess.clients.size;
+            let justActivatedInside = false;
+            if (sess.type === 'direct' && sess.clients.size === 1 && !sess.insideProtocol) {
+                justActivatedInside = true;
+                sess.insideProtocol = true;
+                sess.insideConfirmed = false;
+                sess.insideHybridMode = false;
+                sess.e2eReadyCallCount = 0;
+                if (sess.e2eReadyFrom) {
+                    sess.e2eReadyFrom.clear();
+                }
+                logInfo(`[join] INSIDE protokol | drugi join istim PIN-om na istoj WebSocket vezi | pin=${code}`);
+                pushRoomEvent(code, 'system', 'INSIDE: server šalje inside_query; relay radi odmah; inside_confirm za potvrdu; inside_hybrid za hibridni mod.');
+            }
+
+            const peersInRoom = effectivePeerCount(sess);
             let roomState;
             if (sess.type === 'direct') {
                 roomState = peersInRoom === 1 ? 'waiting_peer' : 'connected';
             } else {
                 roomState = 'active';
             }
-            sendSecure(ws, {
+            const joinedPayload = {
                 t: 'joined',
                 code,
                 mode: sess.type,
                 roomState,
                 peersInRoom,
-            });
+            };
+            if (sess.insideProtocol) {
+                joinedPayload.insideProtocol = true;
+                joinedPayload.insideConfirmed = !!sess.insideConfirmed;
+                joinedPayload.insideHybridMode = !!sess.insideHybridMode;
+            }
+            sendSecure(ws, joinedPayload);
             if (sess.type === 'direct' && peersInRoom === 2) {
                 for (const client of sess.clients) {
                     if (client.readyState === client.OPEN) {
-                        sendSecure(client, {
+                        const sr = {
                             t: 'session_ready',
                             code,
                             roomState: 'connected',
                             peersInRoom: 2,
-                        });
+                        };
+                        if (sess.insideProtocol) {
+                            sr.insideProtocol = true;
+                            sr.insideConfirmed = !!sess.insideConfirmed;
+                            sr.insideHybridMode = !!sess.insideHybridMode;
+                            if (justActivatedInside) {
+                                sr.insideQuery = true;
+                            }
+                        }
+                        sendSecure(client, sr);
+                    }
+                }
+                if (justActivatedInside) {
+                    for (const client of sess.clients) {
+                        if (client.readyState === client.OPEN) {
+                            sendSecure(client, {
+                                t: 'inside_query',
+                                code,
+                                prompt: 'Je li ovo INSIDE razgovor (isti uređaj / isti chat)? Pošalji inside_confirm.',
+                            });
+                        }
                     }
                 }
             }
-            logInfo(`[join] idempotent (isti WebSocket već u sobi) | pin=${code} | peers=${peersInRoom}`);
+            if (sess.type === 'direct' && peersInRoom === 2) {
+                persistSession(sess);
+            }
+            logInfo(`[join] idempotent (isti WebSocket već u sobi) | pin=${code} | peers=${peersInRoom}${sess.insideProtocol ? ' | INSIDE' : ''}`);
             return true;
         }
     }
@@ -167,14 +220,14 @@ function joinRoom(ws, code, mode = 'direct') {
         return false;
     }
 
-    if (session.type === 'direct' && preSize >= 2) {
+    if (session.type === 'direct' && effectivePeerCount(session) >= 2) {
         sendSecure(ws, {
             t: 'error',
             code,
             reason: 'room_full',
             message: 'Direct room already has 2 clients',
         });
-        logInfo(`[join] ODBIJEN room_full | pin=${code} | direct soba već ima 2 klijenta`);
+        logInfo(`[join] ODBIJEN room_full | pin=${code} | direct soba puna (2 peera, uključujući INSIDE)`);
         pushRoomEvent(code, 'system', 'Join odbijen: direct soba puna (2/2).');
         return false;
     }
@@ -190,7 +243,7 @@ function joinRoom(ws, code, mode = 'direct') {
             ? 'Strana A (prvi klijent): spojen. Čeka se drugi peer (strana B).'
             : 'Prvi klijent u group sobi spojen.');
         if (session.type === 'direct') {
-            pushRoomEvent(code, 'system', 'Za B: drugi uređaj ili druga app mora otvoriti svoju WebSocket vezu na isti server i poslati isti PIN — jedna veza = jedan klijent (SQLite/RAM ne mogu dodati drugog bez drugog joina).');
+            pushRoomEvent(code, 'system', 'Za B: drugi uređaj s vlastitom WebSocket vezom i istim PIN-om. Za INSIDE: drugi join istim PIN-om na istoj vezi — server šalje inside_query; relay odmah; inside_confirm za potvrdu.');
         }
     } else if (preSize === 1 && session.type === 'direct') {
         logInfo(`[join] USPJEH | pin=${code} | klijent #2 (direct povezan) | peers=${session.clients.size} | roomState=connected | isti_PIN_soba_spojena`);
@@ -200,7 +253,7 @@ function joinRoom(ws, code, mode = 'direct') {
         pushRoomEvent(code, 'join', `Novi klijent u group sobi (ukupno ${session.clients.size} peerova).`);
     }
 
-    const peersInRoom = session.clients.size;
+    const peersInRoom = effectivePeerCount(session);
     let roomState;
     if (session.type === 'direct') {
         roomState = peersInRoom === 1 ? 'waiting_peer' : 'connected';
@@ -208,25 +261,39 @@ function joinRoom(ws, code, mode = 'direct') {
         roomState = 'active';
     }
 
-    sendSecure(ws, {
+    const joinedOut = {
         t: 'joined',
         code,
         mode: session.type,
         roomState,
         peersInRoom,
-    });
+    };
+    if (session.insideProtocol) {
+        joinedOut.insideProtocol = true;
+        joinedOut.insideConfirmed = !!session.insideConfirmed;
+        joinedOut.insideHybridMode = !!session.insideHybridMode;
+    }
+    sendSecure(ws, joinedOut);
 
-    if (session.type === 'direct' && session.clients.size === 2) {
+    if (session.type === 'direct' && effectivePeerCount(session) === 2) {
         logInfo(`[room] session_ready poslano obama | pin=${code} | direct oba klijenta povezana`);
-        pushRoomEvent(code, 'system', 'session_ready: oba klijenta mogu razmjenjivati signale/poruke.');
+        pushRoomEvent(code, 'system', session.insideProtocol
+            ? 'session_ready (INSIDE): relay odmah; čekaj inside_query / inside_confirm.'
+            : 'session_ready: oba klijenta mogu razmjenjivati signale/poruke.');
         for (const client of session.clients) {
             if (client.readyState === client.OPEN) {
-                sendSecure(client, {
+                const sr = {
                     t: 'session_ready',
                     code,
                     roomState: 'connected',
                     peersInRoom: 2,
-                });
+                };
+                if (session.insideProtocol) {
+                    sr.insideProtocol = true;
+                    sr.insideConfirmed = !!session.insideConfirmed;
+                    sr.insideHybridMode = !!session.insideHybridMode;
+                }
+                sendSecure(client, sr);
             }
         }
     }
@@ -326,6 +393,7 @@ function leaveRoom(ws) {
     if (session.e2eReadyFrom) {
         session.e2eReadyFrom.delete(ws);
     }
+    session.e2eReadyCallCount = 0;
     if (session.type === 'direct' && session.clients.size < 2) {
         session.hibernated = false;
     }
@@ -358,8 +426,17 @@ function broadcastToRoom(code, fromWs, payloadObj) {
     const session = sessions.get(code);
     if (!session) return;
 
+    const insideEcho = session.type === 'direct'
+        && session.insideProtocol
+        && session.clients.size === 1;
+
     for (const client of session.clients) {
-        if (client !== fromWs && client.readyState === client.OPEN) {
+        if (client.readyState !== client.OPEN) continue;
+        if (insideEcho) {
+            if (client === fromWs) {
+                sendSecure(client, payloadObj);
+            }
+        } else if (client !== fromWs) {
             sendSecure(client, payloadObj);
         }
     }
@@ -369,9 +446,10 @@ function broadcastToRoom(code, fromWs, payloadObj) {
 function listActiveRooms() {
     const out = [];
     for (const session of sessions.values()) {
-        const peers = [...session.clients].map((c, slot) => {
+        const clientsArr = [...session.clients];
+        const peers = clientsArr.flatMap((c, slot) => {
             const t = session.clientTransportByWs && session.clientTransportByWs.get(c);
-            return {
+            const row = {
                 slot,
                 wsId: c._clientId ?? null,
                 remoteAddress: t ? t.remoteAddress : null,
@@ -379,14 +457,24 @@ function listActiveRooms() {
                 forwardedFor: t ? t.forwardedFor : null,
                 registeredAt: t ? t.registeredAt : null,
             };
+            if (session.type === 'direct' && session.insideProtocol && clientsArr.length === 1 && slot === 0) {
+                return [
+                    row,
+                    { ...row, slot: 1, insideLogicalPeer: true },
+                ];
+            }
+            return [row];
         });
         out.push({
             pin: session.code,
             type: session.type,
-            clientCount: session.clients.size,
+            clientCount: effectivePeerCount(session),
             createdAt: session.createdAt.toISOString(),
             pinLocked: session.type === 'direct' && !!session.directPinLocked,
             hibernated: !!session.hibernated,
+            insideProtocol: !!session.insideProtocol,
+            insideConfirmed: !!session.insideConfirmed,
+            insideHybridMode: !!session.insideHybridMode,
             peers,
         });
     }
@@ -442,7 +530,7 @@ function syncAllSessionsToDatabase() {
                 ? session.createdAt.toISOString()
                 : session.createdAt,
             renew_count: session.renewCount,
-            client_count: session.clients.size,
+            client_count: effectivePeerCount(session),
             updated_at: now,
         });
     }
@@ -453,34 +541,6 @@ function syncAllSessionsToDatabase() {
 /** Za logiranje pri WS close: koji PIN je klijent imao prije leaveRoom. */
 function getRoomCodeForWs(ws) {
     return socketRoom.get(ws) || null;
-}
-
-/**
- * Admin: nasilno zatvori WebSocket jedne strane u directu (prvi u Setu = A, drugi = B).
- * @param {'first'|'second'} slot
- */
-function forceDisconnectClientBySlot(code, slot) {
-    const session = sessions.get(code);
-    if (!session) {
-        return { ok: false, reason: 'no_room' };
-    }
-    if (slot !== 'first' && slot !== 'second') {
-        return { ok: false, reason: 'bad_slot' };
-    }
-    const clients = [...session.clients];
-    const idx = slot === 'first' ? 0 : 1;
-    if (idx >= clients.length) {
-        return { ok: false, reason: 'no_peer' };
-    }
-    const ws = clients[idx];
-    const sideLabel = slot === 'first' ? 'A (prvi klijent)' : 'B (drugi klijent)';
-    pushRoomEvent(code, 'system', `Administrator: prekid veze za stranu ${sideLabel}.`);
-    try {
-        ws.close(4400, 'admin_disconnect');
-    } catch {
-        return { ok: false, reason: 'close_failed' };
-    }
-    return { ok: true };
 }
 
 module.exports = {
@@ -496,5 +556,4 @@ module.exports = {
     allocateUniqueRoomCode,
     syncAllSessionsToDatabase,
     getRoomCodeForWs,
-    forceDisconnectClientBySlot,
 };

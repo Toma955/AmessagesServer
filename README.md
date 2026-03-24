@@ -14,7 +14,6 @@ Node.js server za sobe preko **WebSocket** + **libsodium crypto_box**, s **SQLit
 | `DATABASE_PATH` | Put do SQLite datoteke ili `:memory:` za testove |
 | `SYNC_DB_INTERVAL_MS` | Periodički sync RAM → SQLite (ms); `0` = isključeno |
 | `NODE_ENV` | U `test` načinu isključen je periodički sync i signal handleri za shutdown |
-| `ADMIN_TOKEN` | Ako je postavljen, admin API (dnevnik sobe, prekid strane, SSE) zahtijeva `Authorization: Bearer …`, zaglavlje `X-Admin-Token` ili query `admin_token` na SSE URL-u |
 
 WebSocket URL: `ws://<host>:<PORT>/` (isti server kao HTTP; nema posebnog patha).
 
@@ -99,22 +98,15 @@ Provjera je li kod zauzet (aktivna sesija u RAM-u, zapis u bazi ili kratka rezer
 | `createdAt` | string (ISO) | Vrijeme nastanka sesije |
 | `pinLocked` | boolean | U **direct** sobi: `true` kad je jedan peer otišao i PIN je zaključan za nove dok zadnji ne ode |
 | `hibernated` | boolean | `true` kad su oba klijenta u **direct** sobi poslala `e2e_ready` (standby, manje DB upisa) |
+| `insideProtocol` | boolean | **INSIDE**: drugi `join` istim PIN-om na istoj WebSocket vezi |
+| `insideConfirmed` | boolean | **INSIDE**: klijent poslao `inside_confirm` |
+| `insideHybridMode` | boolean | **INSIDE**: klijent poslao `inside_hybrid` |
 
 **`database`**: snimak tablice `sessions` (npr. `pin`, `type`, `createdAt`, `renewCount`, `clientCount`, `updatedAt`).
 
 **Napomena:** Endpoint nema autentikacije u kodu — u produkciji ograniči pristup (npr. samo interna mreža ili reverse proxy).
 
-### Admin: dnevnik po sobi i prekid veze (web na `GET /`)
-
-Na početnoj stranici (`/`) tablica aktivnih soba ima po redu: **Konzola** (otvara **SSE** tok događaja samo za taj PIN; gumb **Kopiraj konzolu** kopira cijeli dnevnik u međuspremnik), stupac **Priključci (RAM)** (`ws` id + IP:port po peeru), **Prekini A** / **Prekini B** (samo **direct**: prvi spojeni = A, drugi = B; nasilno zatvara taj WebSocket). Ako je postavljen `ADMIN_TOKEN`, u konzoli preglednika jednom postavi `localStorage.setItem('amessages_admin_token', '<token>')` (ili koristi `?admin_token=` na stream URL-u).
-
-- **`GET /api/rooms/:pin/events`** — JSON `{ "pin", "events": [ { "ts", "kind", "message" } ] }` (povijest u memoriji servera).
-- **`GET /api/rooms/:pin/events/stream`** — **Server-Sent Events**; prvo se pošalje cijela povijest, zatim novi redovi uživo.
-- **`POST /api/rooms/:pin/disconnect`** — tijelo `{ "slot": "first" | "second" }` (isto značenje kao A/B).
-
-Ako je postavljen `ADMIN_TOKEN`, ovi endpointi zahtijevaju autentikaciju (Bearer / `X-Admin-Token`; za EventSource u pregledniku možeš dodati `?admin_token=` na stream URL — vidljivo u URL-u, pa u produkciji radije proxy ili isti origin bez tokena na javnoj mreži).
-
-Događaji uključuju: otvaranje sesije, join strane A/B, relay `signal`/`msg`, `ping_self` / `peer_ping` / `peer_pong`, `e2e_ready`, odlazak, `close_session`, admin prekid.
+`GET /` vraća kratku statičku stranicu (bez pregleda soba ili kontrolnih panela).
 
 ---
 
@@ -213,6 +205,31 @@ Kad u **direct** sobi drugi klijent uđe, **oba** dobiju dodatno:
 
 Moguće greške (box): `invalid_code`, `pin_occupied`, `room_full` (vidi odjeljak Greške).
 
+#### INSIDE (isti uređaj / isti chat / ista mreža)
+
+Za signaling između **dva logička peer-a na istoj WebSocket vezi** (npr. dva UI-a na istom telefonu):
+
+1. Prvi `join` s PIN-om — kao i inače (`waiting_peer`).
+2. **Drugi** `join` s **istim** `code` na **istoj** vezi. Server uključuje INSIDE i šalje `joined` / `session_ready` s `insideProtocol: true` i **`insideQuery: true`** (prvi put kad se INSIDE aktivira).
+3. Odmah zatim (isti trenutak) server šalje posebnu poruku **`inside_query`**: `{ "t": "inside_query", "code": "<16>", "prompt": "..." }` — upit je li ovo INSIDE razgovor.
+4. **`signal`**, **`msg`**, **`peer_ping` / `peer_pong`** rade **odmah** (relay ne čeka potvrdu); kod jednog fizičkog WebSocketa relay ide echo na istu vezu (drugi logički peer).
+5. Klijent po želji pošalje **`inside_confirm`** da potvrdi da je riječ o INSIDE razgovoru (sistemska poruka):
+
+```json
+{ "t": "inside_confirm", "code": "<16>", "message": "opcionalno, kratko" }
+```
+
+- Odgovor pošiljatelju: `{ "t": "inside_confirm_ack", "code", "insideConfirmed": true }`.
+- Broadcast svima u sobi: `{ "t": "inside_confirmed", "code", "message": "..." }` (opcionalno `message`).
+6. Kada razgovor uđe u **hibridni** mod (npr. uz server i lokalnu mrežu), klijent može poslati:
+
+```json
+{ "t": "inside_hybrid", "code": "<16>" }
+```
+
+- Server postavlja `insideHybridMode` i šalje svima `{ "t": "inside_hybrid_ack", "code", "hybrid": true }`. Veza ostaje otvorena za relay dok klijent ne zatvori WebSocket ili dok `e2e_ready` ne uvede hibernaciju po postojećim pravilima.
+7. `e2e_ready` u INSIDE načinu s **jednim** WebSocketom: pošalji **dva puta** (dva logička peer-a).
+
 ### `signal`
 
 WebRTC ili drugi signal kroz server (relay svim drugim peerovima u sobi).
@@ -283,7 +300,7 @@ Relay za ping drugog peera.
 
 `nonce`/`ts` su opcionalni ako ih nema u payloadu.
 
-- Zahtijeva **barem 2** klijenta u sobi; inače `peer_not_ready`.
+- Zahtijeva **barem 2** klijenta u sobi (ili INSIDE s 2 logička peera); inače `peer_not_ready`.
 - Broadcast: `{ "t": "peer_ping" | "peer_pong", "category": "ping_peer", "code", ... }`, `wake` ako hibernirano.
 
 ### `e2e_ready`
@@ -294,7 +311,7 @@ Javljanje da su klijenti prešli na **izravni E2E** kanal (bez relaya preko serv
 { "t": "e2e_ready", "code": "<16>" }
 ```
 
-- Samo **direct** soba s **točno 2** peer-a.
+- Samo **direct** soba s **točno 2** peer-a (uključujući INSIDE s jednim WebSocketom).
 - Prvi koji pošalje dobije:
 
 ```json
@@ -311,6 +328,10 @@ Javljanje da su klijenti prešli na **izravni E2E** kanal (bez relaya preko serv
 - Bilo koji `signal`, `msg`, `ping_self`, `peer_ping`, `peer_pong` ili novi **join** u grupu (hibernacija) ponovno **budi** sesiju.
 
 Greške: `invalid_code`, `not_in_room`, `e2e_ready_invalid`.
+
+### `inside_confirm` / `inside_hybrid`
+
+Vidi odjeljak **INSIDE** iznad.
 
 ### Nepoznat `inner.t`
 
@@ -341,6 +362,8 @@ Greške: `invalid_code`, `not_in_room`, `e2e_ready_invalid`.
 | `pin_occupied` | Direct PIN zaključan za nove dok zadnji ne ode |
 | `peer_not_ready` | Manje od 2 peera u sobi |
 | `e2e_ready_invalid` | `e2e_ready` samo za direct s 2 peera |
+| `inside_confirm_invalid` | `inside_confirm` samo u INSIDE sesiji |
+| `inside_hybrid_invalid` | `inside_hybrid` samo u INSIDE sesiji |
 | `unknown_type` | Nepoznat `inner.t` |
 
 ---
@@ -355,6 +378,19 @@ Greške: `invalid_code`, `not_in_room`, `e2e_ready_invalid`.
 6. Redoslijed poslovne logike: `join` → čekaj `joined` (i `session_ready` u directu) → `signal` / `msg` / ostalo.
 
 Biblioteka: **libsodium** (npr. `libsodium-wrappers` u Nodeu, `libsodium.js` u pregledniku) — isti API kao u server testovima (`crypto_box_easy`, `crypto_box_open_easy`, `randombytes_buf` za nonce).
+
+### Implementacija INSIDE na klijentu (isti WebSocket, dva logička peer-a)
+
+1. Otvori **jednu** WebSocket vezu i dovrši razmjenu ključeva (`get_server_key` → `client_key`).
+2. Pošalji **prvi** `join` s PIN-om; čekaj `joined` (`waiting_peer`, `peersInRoom: 1`).
+3. Pošalji **drugi** `join` s **istim** `code` na **istoj** vezi (isti `inner` kao korak 2).
+4. Očekuj `joined` / `session_ready` s `insideProtocol: true` i `insideQuery: true`, te poruku `inside_query` (isti sadržaj upita u `prompt`).
+5. **Relay već radi**: možeš slati `signal` / `msg` / `peer_ping` / `peer_pong` — na jednoj vezi drugi „peer” vidi echo istog okvira (isti socket).
+6. Kad želiš potvrditi da je riječ o INSIDE razgovoru, pošalji `inside_confirm` (opcionalno `message`). Obradi `inside_confirm_ack` i `inside_confirmed`.
+7. Kad u aplikaciji uključiš hibrid (npr. uz LAN), pošalji `inside_hybrid`; obradi `inside_hybrid_ack`.
+8. Za hibernaciju kao kod dva odvojena uređaja: u INSIDE s jednom vezom pošalji **`e2e_ready` dvaput** (dva logička peer-a).
+
+**Referenca u kodu:** integracijski test `INSIDE: inside_query + relay prije inside_confirm + inside_confirm` u `tests/integrationSession.test.js` (funkcije `exchangeKeys`, `encryptClientToServer`, `waitForInnerType`).
 
 ---
 
@@ -375,13 +411,12 @@ HTTP server **ne** postavlja CORS zaglavlja. Ako frontend i API nisu isti origin
 | WebSocket životni ciklus veza | `src/ws/WebSocketManager.js` |
 | Graceful shutdown | `src/bootstrap/shutdown.js` |
 | Konstante soba (rezervacija PIN-a) | `src/core/roomConstants.js` |
-| Dnevnik po sobi (za admin konzolu) | `src/core/roomDiagnostics.js` |
-| Admin HTTP (events / SSE / disconnect) | `src/http/routes/RoomAdminApiRoute.js` |
+| Rezervirano (no-op hookovi za događaje) | `src/core/roomDiagnostics.js` |
 | WS routing (box / inner.t) | `src/core/messageRouter.js` |
 | Box kripto | `src/crypto/boxChannel.js`, `src/crypto/serverIdentity.js` |
 | Sobe | `src/core/roomManager.js` |
 | SQLite | `src/db/sessionStore.js` |
-| Handlers | `src/handlers/*.js` |
+| Handlers | `src/handlers/*.js` (npr. `insideConfirmHandler.js` za INSIDE) |
 | Integracijski testovi (primjeri protokola) | `tests/integrationSession.test.js` |
 
 Ažuriraj ovaj README kad mijenjaš protokol ili dodaješ nove `inner.t` tipove.
