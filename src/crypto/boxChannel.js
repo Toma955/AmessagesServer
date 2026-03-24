@@ -1,6 +1,6 @@
 const { getSodium, getServerKeypairBytes } = require('./serverIdentity');
 const { getClientPublicKeyBytes } = require('../core/clientKeys');
-const { logError } = require('../utils/logger');
+const { logError, logInfo } = require('../utils/logger');
 
 /** Maks. veličina ciphertexta (zaštita od DoS). */
 const MAX_CIPHER_BYTES = 512 * 1024;
@@ -45,6 +45,9 @@ function sendSecure(ws, innerObj) {
     const plain = Buffer.from(JSON.stringify(innerObj), 'utf8');
     const nonce = sodium.randombytes_buf(sodium.crypto_box_NONCEBYTES);
     const cipher = sodium.crypto_box_easy(plain, nonce, clientPk, serverSk);
+
+    const innerT = innerObj && typeof innerObj.t === 'string' ? innerObj.t : '?';
+    logInfo(`[WS] box out | inner.t=${innerT} | c_len=${cipher.length}`);
 
     ws.send(JSON.stringify({
         t: 'box',

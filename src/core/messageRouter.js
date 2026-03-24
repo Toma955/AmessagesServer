@@ -17,7 +17,7 @@ function routeMessage(ws, raw) {
     try {
         msg = JSON.parse(raw);
     } catch (e) {
-        logError('Invalid JSON message');
+        logError('Invalid JSON message', raw.slice(0, 200));
         return;
     }
 
@@ -37,6 +37,7 @@ function routeMessage(ws, raw) {
     }
 
     if (!hasClientKey(ws)) {
+        logInfo(`[WS] reply plaintext error | reason=key_exchange_required | msg.t=${msg.t}`);
         return ws.send(JSON.stringify({
             t: 'error',
             reason: 'key_exchange_required',
@@ -46,6 +47,7 @@ function routeMessage(ws, raw) {
 
     // Nakon razmjene ključeva: samo box (enkriptirani kanal). Iznimka: gore navedeni plaintext tipovi.
     if (msg.t !== 'box' || typeof msg.nonce !== 'string' || typeof msg.c !== 'string') {
+        logInfo(`[WS] reply box error | reason=encryption_required | got.t=${msg.t}`);
         return trySendSecure(ws, {
             t: 'error',
             reason: 'encryption_required',
@@ -122,6 +124,7 @@ function routeMessage(ws, raw) {
             return handleInsideHybrid(ws, inner);
 
         default:
+            logInfo(`[WS] box | unknown inner.t=${inner.t} | pin=${typeof inner.code === 'string' ? inner.code : '—'}`);
             trySendSecure(ws, { t: 'error', reason: 'unknown_type' });
     }
 }

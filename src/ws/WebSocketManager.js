@@ -39,7 +39,9 @@ class WebSocketManager {
         logInfo(`[WS] OPEN | id=ws${ws._clientId} | nova TCP/WebSocket veza`);
 
         ws.on('message', (data) => {
-            this.routeMessage(ws, data.toString());
+            const raw = data.toString();
+            logInfo(`[WS] RAW in | id=ws${ws._clientId} | ${summarizeWsInbound(raw)}`);
+            this.routeMessage(ws, raw);
         });
 
         ws.on('close', () => {
@@ -55,6 +57,21 @@ class WebSocketManager {
         ws.on('error', (err) => {
             logError(`[WS] error | id=ws${ws._clientId}`, err);
         });
+    }
+}
+
+/** Sažetak poruke za log (bez punog ciphertexta). */
+function summarizeWsInbound(raw) {
+    try {
+        const msg = JSON.parse(raw);
+        if (msg.t === 'box' && typeof msg.c === 'string') {
+            return `t=box nonce_len=${(msg.nonce && msg.nonce.length) || 0} c_len=${msg.c.length}`;
+        }
+        const { t, ...rest } = msg;
+        const extra = Object.keys(rest).length ? ` keys=${Object.keys(rest).join(',')}` : '';
+        return `t=${t}${extra}`;
+    } catch {
+        return `non-JSON len=${raw.length} preview=${raw.slice(0, 120)}`;
     }
 }
 

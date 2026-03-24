@@ -10,18 +10,12 @@ const buffers = new Map();
 /** @type {Map<string, Set<{ res: import('http').ServerResponse }>>} */
 const sseByCode = new Map();
 
-function isTestNoop() {
-    return process.env.NODE_ENV === 'test';
-}
-
 /**
  * @param {string} code - PIN sobe
  * @param {string} kind - npr. system, join, leave, traffic, e2e
  * @param {string} message
  */
 function pushRoomEvent(code, kind, message) {
-    if (isTestNoop()) return;
-
     const entry = { ts: new Date().toISOString(), kind, message: String(message) };
     let buf = buffers.get(code);
     if (!buf) {
@@ -87,8 +81,6 @@ function attachRoomEventStream(res, code) {
 
 /** Zatvori pretplatu i obriši buffer kad se soba ukloni iz RAM-a. */
 function clearRoomDiagnostics(code) {
-    if (isTestNoop()) return;
-
     const subs = sseByCode.get(code);
     if (subs) {
         for (const sub of subs) {

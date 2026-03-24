@@ -1,4 +1,4 @@
-require('dotenv').config({ quiet: true });
+require('dotenv').config();
 
 function getConfig() {
     const syncMs = parseInt(process.env.SYNC_DB_INTERVAL_MS || '300000', 10);
