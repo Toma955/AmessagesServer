@@ -1,4 +1,5 @@
 const http = require('http');
+const path = require('path');
 const sodium = require('libsodium-wrappers');
 const { getConfig } = require('./config/env');
 const { initServerIdentity } = require('./crypto/serverIdentity');
@@ -15,6 +16,26 @@ const { WebSocketManager } = require('./ws/WebSocketManager');
 const { shutdownGracefully } = require('./bootstrap/shutdown');
 
 const config = getConfig();
+
+/** Opis puta baze za log (bez tajni). */
+function describeDatabasePath() {
+    const p = process.env.DATABASE_PATH;
+    if (p === ':memory:') return ':memory:';
+    if (p && String(p).trim() !== '') return p;
+    return `${path.join(process.cwd(), 'data', 'amessages.db')} (default)`;
+}
+
+function logStartupBanner(cfg) {
+    const syncNote = cfg.SYNC_DB_INTERVAL_MS === 0 ? 'off' : `every ${cfg.SYNC_DB_INTERVAL_MS} ms`;
+    logInfo('──────────────── AmessagesServer ────────────────');
+    logInfo(`NODE_ENV=${cfg.NODE_ENV}`);
+    logInfo(`PORT=${cfg.PORT}`);
+    logInfo(`DATABASE_PATH=${describeDatabasePath()}`);
+    logInfo(`SYNC_DB_INTERVAL_MS=${cfg.SYNC_DB_INTERVAL_MS} (${syncNote})`);
+    logInfo(`ADMIN_TOKEN=${cfg.ADMIN_TOKEN ? 'set (admin API requires auth)' : 'unset (admin API open if exposed)'}`);
+    logInfo('HTTP + WebSocket on same port; crypto_box after client_key');
+    logInfo('────────────────────────────────────────────────');
+}
 
 const server = http.createServer(buildHttpListener());
 
@@ -37,6 +58,7 @@ const listeningPromise = (async () => {
         });
     });
     logInfo(`Server listening on port ${config.PORT}`);
+    logStartupBanner(config);
 
     if (config.NODE_ENV !== 'test' && config.SYNC_DB_INTERVAL_MS > 0) {
         const id = setInterval(() => {
