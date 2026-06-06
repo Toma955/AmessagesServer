@@ -7,7 +7,10 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "test": "NODE_ENV=test DATABASE_PATH=:memory: jest --runInBand --detectOpenHandles=false --forceExit",
-    "verify:direct": "node scripts/verify-direct-pin.js"
+    "verify:direct": "node scripts/verify-direct-pin.js",
+    "build:packages": "node scripts/build-market-packages.js",
+    "prestart": "node scripts/build-market-packages.js",
+    "pretest": "node scripts/build-market-packages.js"
   },
   "keywords": [],
   "author": "",

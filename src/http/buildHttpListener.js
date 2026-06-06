@@ -6,14 +6,26 @@ const {
     listActiveRooms,
     allocateUniqueRoomCode,
     getRoomCodeAvailabilityDetails,
+    validateRoomCodeForJoin,
+    getRoomPublicStatus,
 } = require('../core/roomManager');
 const { listAllSessionsFromDb } = require('../db/sessionStore');
 const { HttpPipeline } = require('./HttpPipeline');
 const { HealthRoute } = require('./routes/HealthRoute');
+const { PingStatusRoutes } = require('./routes/PingStatusRoutes');
+const { ServerInfoRoute } = require('./routes/ServerInfoRoute');
 const { RoomCodeCheckGetRoute } = require('./routes/RoomCodeCheckGetRoute');
 const { RoomCodeCheckPostRoute } = require('./routes/RoomCodeCheckPostRoute');
+const { RoomCodeValidateRoute } = require('./routes/RoomCodeValidateRoute');
 const { RoomCodeAllocateRoute } = require('./routes/RoomCodeAllocateRoute');
+const { RoomStatusRoute } = require('./routes/RoomStatusRoute');
 const { RoomsListRoute } = require('./routes/RoomsListRoute');
+const { WatchmanConfigRoute } = require('./routes/WatchmanConfigRoute');
+const { SessionDiagnosticsRoute } = require('./routes/SessionDiagnosticsRoute');
+const { NetworkRoutes } = require('./routes/NetworkRoutes');
+const { SecurityRoutes } = require('./routes/SecurityRoutes');
+const { MarketRoutes } = require('./routes/MarketRoutes');
+const { AppSystemCommsRoute } = require('./routes/AppSystemCommsRoute');
 const { IndexHtmlRoute } = require('./routes/IndexHtmlRoute');
 const { RoomAdminApiRoute } = require('./routes/RoomAdminApiRoute');
 const { logInfo } = require('../utils/logger');
@@ -45,6 +57,8 @@ function buildHttpListener(options = {}) {
         allocateUniqueRoomCode,
         listActiveRooms,
         listAllSessionsFromDb,
+        validateRoomCodeForJoin,
+        getRoomPublicStatus,
         logInfo: li,
         logError: le,
     };
@@ -58,9 +72,19 @@ function buildHttpListener(options = {}) {
 
     const routes = [
         new HealthRoute(),
+        new PingStatusRoutes(),
+        new ServerInfoRoute(),
+        new NetworkRoutes(),
+        new SecurityRoutes({ logError: le }),
+        new MarketRoutes(),
+        new AppSystemCommsRoute(),
+        new WatchmanConfigRoute(),
+        new SessionDiagnosticsRoute({ logInfo: li, logError: le }),
         new RoomCodeCheckGetRoute(shared),
         new RoomCodeCheckPostRoute(shared),
+        new RoomCodeValidateRoute(shared),
         new RoomCodeAllocateRoute(shared),
+        new RoomStatusRoute(shared),
         new RoomsListRoute(shared),
         adminRoute,
         new IndexHtmlRoute({ indexHtml }),

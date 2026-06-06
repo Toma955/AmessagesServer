@@ -543,11 +543,6 @@ function getRoomCodeForWs(ws) {
     return socketRoom.get(ws) || null;
 }
 
-/**
- * Admin: nasilno zatvori WebSocket jedne strane u directu (prvi u Setu = A, drugi = B).
- * INSIDE (jedan WS, dva logična slota): oba gumba zatvaraju istu fizičku vezu.
- * @param {'first'|'second'} slot
- */
 function forceDisconnectClientBySlot(code, slot) {
     const session = sessions.get(code);
     if (!session) {
@@ -582,6 +577,106 @@ function forceDisconnectClientBySlot(code, slot) {
     return { ok: true };
 }
 
+/** W2 — validacija PIN-a prije joina (Nilternius Watchman). */
+function validateRoomCodeForJoin(code) {
+    const { isValidCode } = require('../utils/validateCode');
+    if (!isValidCode(code)) {
+        return {
+            valid: false,
+            formatOk: false,
+            available: false,
+            reason: 'invalid_code',
+        };
+    }
+
+    const session = sessions.get(code);
+    if (session) {
+        if (session.type === 'direct' && session.directPinLocked) {
+            return {
+                valid: true,
+                formatOk: true,
+                available: false,
+                reason: 'pin_locked',
+            };
+        }
+        if (session.type === 'direct' && effectivePeerCount(session) >= 2) {
+            return {
+                valid: true,
+                formatOk: true,
+                available: false,
+                reason: 'room_full',
+            };
+        }
+        return {
+            valid: true,
+            formatOk: true,
+            available: true,
+            reason: null,
+        };
+    }
+
+    const details = getRoomCodeAvailabilityDetails(code);
+    if (details.inMemorySession || details.inDatabase || details.reserved) {
+        return {
+            valid: true,
+            formatOk: true,
+            available: false,
+            reason: 'room_occupied',
+        };
+    }
+
+    return {
+        valid: true,
+        formatOk: true,
+        available: true,
+        reason: null,
+    };
+}
+
+/** W3 — read-only status sobe (Nilternius Watchman / Island). */
+function getRoomPublicStatus(code) {
+    const session = sessions.get(code);
+    if (!session) {
+        const details = getRoomCodeAvailabilityDetails(code);
+        if (details.occupied) {
+            return {
+                code,
+                state: 'locked',
+                peerCount: 0,
+                insideCapable: true,
+            };
+        }
+        return {
+            code,
+            state: 'empty',
+            peerCount: 0,
+            insideCapable: true,
+        };
+    }
+
+    const peerCount = effectivePeerCount(session);
+    let state = 'empty';
+
+    if (session.type === 'direct') {
+        if (session.directPinLocked) {
+            state = 'locked';
+        } else if (peerCount >= 2) {
+            state = 'ready';
+        } else if (peerCount === 1) {
+            state = 'waiting_peer';
+        }
+    } else if (peerCount > 0) {
+        state = 'ready';
+    }
+
+    return {
+        code,
+        state,
+        peerCount,
+        insideCapable: session.type === 'direct',
+    };
+}
+
 module.exports = {
     joinRoom,
     leaveRoom,
@@ -596,4 +691,6 @@ module.exports = {
     syncAllSessionsToDatabase,
     getRoomCodeForWs,
     forceDisconnectClientBySlot,
+    validateRoomCodeForJoin,
+    getRoomPublicStatus,
 };

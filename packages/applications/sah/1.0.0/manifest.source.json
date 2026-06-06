@@ -1,0 +1,17 @@
+{
+  "format": "nilternius-package-v1",
+  "manifest": {
+    "itemId": "sah",
+    "idNumber": 10001,
+    "category": "applications",
+    "version": "1.0.0",
+    "title": "Šah",
+    "detail": "Mini aplikacija — šah u chatu",
+    "hostModuleId": "sah",
+    "minHostAppVersion": "1.0.0"
+  },
+  "files": [
+    "Resources/Locals/hr.json",
+    "Resources/Locals/en.json"
+  ]
+}
